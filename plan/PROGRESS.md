@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Phase**: 3 - Backup Storage (JSON)
+**Phase**: 4 - Markdown Conversion
 **Status**: Complete
 **Last Updated**: 2026-01-04
 
@@ -94,7 +94,24 @@ python -m notion_backup -c ./data/config.yaml run
 ---
 
 ## Phase 4: Markdown Conversion
-**Status**: Not Started
+**Status**: Complete
+**Completed**: 2026-01-04
+
+### Completed
+- [x] `src/notion_backup/markdown/__init__.py` - Package init
+- [x] `src/notion_backup/markdown/converter.py` - Block → Markdown conversion
+- [x] `src/notion_backup/markdown/writer.py` - File/directory output
+- [x] Wire into `backup_workspace()` function
+- [x] Import check passes
+
+### Features
+- Converts all common Notion block types to Markdown
+- Rich text formatting (bold, italic, code, strikethrough, links)
+- YAML frontmatter with page metadata and properties
+- Directory hierarchy matching page parent/child nesting
+- Relative links to downloaded files
+- Safe filename generation with duplicate handling
+- Handles: paragraphs, headings, lists, to-dos, toggles, quotes, callouts, code blocks, dividers, images, files, bookmarks, tables, columns, equations, embeds
 
 ---
 

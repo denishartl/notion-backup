@@ -11,6 +11,7 @@ from .config import load_config, ConfigError, WorkspaceConfig
 from .scheduler import run_scheduler
 from .notion import NotionClient, fetch_page_with_blocks, fetch_database_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
+from .markdown import MarkdownWriter
 
 
 DEFAULT_CONFIG_PATH = Path("/data/config.yaml")
@@ -46,8 +47,21 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     storage = BackupStorage(backup_path, ws.name)
     storage.create_directories()
 
+    # Initialize markdown writer
+    md_writer = MarkdownWriter(storage.markdown_path, storage.files_path)
+
     # Discover all content
     content = client.discover_content()
+
+    # Build parent map for page hierarchy
+    parent_map: dict[str, str | None] = {}
+    for page in content.pages:
+        page_id = page["id"]
+        parent = page.get("parent", {})
+        if parent.get("type") == "page_id":
+            parent_map[page_id] = parent.get("page_id")
+        else:
+            parent_map[page_id] = None
 
     pages_data = []
     databases_data = []
@@ -95,6 +109,35 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
         storage.files_path,
     )
     errors.extend(file_errors)
+
+    # Write markdown files (after downloading files so links work)
+    # Sort pages so parents are written before children
+    pages_by_id = {data.page["id"]: data for data in pages_data}
+    written_pages: set[str] = set()
+
+    def write_page_recursive(page_id: str) -> None:
+        if page_id in written_pages:
+            return
+        if page_id not in pages_by_id:
+            return
+
+        # Write parent first if it exists
+        parent_id = parent_map.get(page_id)
+        if parent_id and parent_id in pages_by_id:
+            write_page_recursive(parent_id)
+
+        # Write this page
+        data = pages_by_id[page_id]
+        try:
+            md_writer.write_page(data.page, data.blocks, parent_id)
+        except Exception as e:
+            logger.warning(f"Failed to write markdown for page {page_id}: {e}")
+        written_pages.add(page_id)
+
+    for page_id in pages_by_id:
+        write_page_recursive(page_id)
+
+    logger.info(f"Wrote {len(written_pages)} markdown files")
 
     # Create and save manifest
     manifest = create_manifest(
