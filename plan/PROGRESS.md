@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Phase**: 2 - Notion API Integration
+**Phase**: 3 - Backup Storage (JSON)
 **Status**: Complete
 **Last Updated**: 2026-01-04
 
@@ -72,7 +72,24 @@ python -m notion_backup -c ./data/config.yaml run
 ---
 
 ## Phase 3: Backup Storage (JSON)
-**Status**: Not Started
+**Status**: Complete
+**Completed**: 2026-01-04
+
+### Completed
+- [x] `src/notion_backup/backup/__init__.py` - Package init
+- [x] `src/notion_backup/backup/storage.py` - Directory/file management
+- [x] `src/notion_backup/backup/files.py` - File download logic with retries
+- [x] `src/notion_backup/backup/manifest.py` - Manifest generation
+- [x] Wire into `backup_workspace()` function
+- [x] Import check passes
+
+### Features
+- Creates timestamped backup directories per workspace
+- Saves pages and databases as JSON files
+- Downloads embedded files (images, PDFs, etc.) with hash-based naming
+- Generates `manifest.json` with backup stats and status
+- Retry logic for failed downloads (3 attempts)
+- Status tracking: completed, completed_with_warnings, failed
 
 ---
 
