@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Phase**: 4 - Markdown Conversion
+**Phase**: 5 - Retention & Notifications
 **Status**: Complete
 **Last Updated**: 2026-01-04
 
@@ -116,7 +116,22 @@ python -m notion_backup -c ./data/config.yaml run
 ---
 
 ## Phase 5: Retention & Notifications
-**Status**: Not Started
+**Status**: Complete
+**Completed**: 2026-01-04
+
+### Completed
+- [x] `src/notion_backup/retention.py` - Backup pruning logic
+- [x] `src/notion_backup/notifications.py` - Discord webhook notifications
+- [x] Wire into `run_backup()` function
+- [x] Import check passes
+
+### Features
+- Automatic deletion of old backups beyond retention_count
+- Timestamp-format directory detection for safe pruning
+- Discord webhook notifications with colored embeds
+- Configurable notify_on: "always" or "error"
+- Status-based coloring (green/yellow/red)
+- Summary includes: pages, databases, files, duration, errors
 
 ---
 

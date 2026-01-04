@@ -7,11 +7,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .config import load_config, ConfigError, WorkspaceConfig
+from .config import load_config, ConfigError, WorkspaceConfig, Config
 from .scheduler import run_scheduler
 from .notion import NotionClient, fetch_page_with_blocks, fetch_database_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
 from .markdown import MarkdownWriter
+from .retention import prune_old_backups
+from .notifications import send_discord_notification, should_notify
 
 
 DEFAULT_CONFIG_PATH = Path("/data/config.yaml")
@@ -163,10 +165,12 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
         "errors": len(errors),
         "status": manifest.status,
         "backup_path": str(storage.backup_path),
+        "duration_seconds": manifest.duration_seconds,
+        "error_list": errors,
     }
 
 
-def run_backup(config, workspace_name: str | None = None, backup_path: Path | None = None) -> None:
+def run_backup(config: Config, workspace_name: str | None = None, backup_path: Path | None = None) -> None:
     """Execute backup for configured workspaces.
 
     Args:
@@ -188,11 +192,44 @@ def run_backup(config, workspace_name: str | None = None, backup_path: Path | No
 
     for ws in workspaces:
         logger.info(f"Starting backup for workspace: {ws.name}")
+        stats = None
         try:
             stats = backup_workspace(ws, backup_path)
             logger.info(f"Backup saved to: {stats['backup_path']}")
+
+            # Prune old backups
+            deleted = prune_old_backups(backup_path, ws.name, config.retention_count)
+            if deleted > 0:
+                logger.info(f"Pruned {deleted} old backup(s) for {ws.name}")
+
         except Exception as e:
             logger.error(f"Backup for workspace '{ws.name}' failed: {e}")
+            stats = {
+                "pages": 0,
+                "databases": 0,
+                "files": 0,
+                "errors": 1,
+                "status": "failed",
+                "backup_path": str(backup_path / ws.name),
+                "error_list": [{"type": "backup", "error": str(e)}],
+            }
+
+        # Send notification if configured
+        webhook_url = config.notifications.discord_webhook_url
+        if webhook_url and stats:
+            notify_on = config.notifications.notify_on
+            if should_notify(notify_on, stats["status"]):
+                send_discord_notification(
+                    webhook_url=webhook_url,
+                    workspace_name=ws.name,
+                    status=stats["status"],
+                    pages=stats["pages"],
+                    databases=stats["databases"],
+                    files=stats["files"],
+                    duration_seconds=stats.get("duration_seconds", 0),
+                    errors=stats.get("error_list", []),
+                    backup_path=stats["backup_path"],
+                )
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
