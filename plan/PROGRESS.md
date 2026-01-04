@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Phase**: 1 - Project Skeleton & Config
+**Phase**: 2 - Notion API Integration
 **Status**: Complete
 **Last Updated**: 2026-01-04
 
@@ -41,14 +41,33 @@ docker logs -f notion-backup
 ---
 
 ## Phase 2: Notion API Integration
-**Status**: Not Started
+**Status**: Complete
+**Completed**: 2026-01-04
 
-### Next Steps
-1. Create `src/notion_backup/notion/` package
-2. Implement Notion API client wrapper
-3. Implement page fetching with recursive block retrieval
-4. Implement database fetching (schema + rows)
-5. Wire into `run_backup()` function
+### Completed
+- [x] `src/notion_backup/notion/__init__.py` - Package init
+- [x] `src/notion_backup/notion/client.py` - Notion API wrapper with search/pagination
+- [x] `src/notion_backup/notion/pages.py` - Recursive block fetching
+- [x] `src/notion_backup/notion/databases.py` - Database schema + rows
+- [x] Wire into `run_backup()` function
+- [x] Error handling verified (invalid token returns proper error)
+
+### Verified With Real Token
+- [x] Discovered 2484 pages, 0 databases
+- [x] Successfully fetched page content and blocks
+- [x] Pagination working correctly (26 search API calls to discover all content)
+
+### Notes
+- Uses official `notion-client` SDK with `collect_paginated_api` helper
+- Recursive block fetching handles nested content (toggles, columns, etc.)
+- Errors on individual pages/databases don't abort entire backup
+- Stats logged after each workspace backup
+
+### To Test With Real Token
+```bash
+export NOTION_TOKEN_PERSONAL="your-notion-integration-token"
+python -m notion_backup -c ./data/config.yaml run
+```
 
 ---
 
