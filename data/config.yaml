@@ -1,0 +1,26 @@
+# ABOUTME: Example configuration file for notion-backup.
+# ABOUTME: Copy to /data/config.yaml and customize.
+
+# Backup schedule (cron syntax: minute hour day month weekday)
+# This example runs daily at 3:00 AM
+schedule: "0 3 * * *"
+
+# Number of backups to keep per workspace
+# Older backups are automatically deleted
+retention_count: 7
+
+# Discord notifications (optional)
+# notifications:
+#   discord_webhook_url: "https://discord.com/api/webhooks/..."
+#   notify_on: "always"  # "always" = every backup, "error" = only on failure
+
+# Workspaces to back up
+# Each workspace needs a Notion Internal Integration token
+# Create integrations at: https://www.notion.so/my-integrations
+workspaces:
+  - name: personal
+    token_env: NOTION_TOKEN_PERSONAL  # Environment variable containing the token
+
+  # Add more workspaces as needed:
+  # - name: work
+  #   token_env: NOTION_TOKEN_WORK

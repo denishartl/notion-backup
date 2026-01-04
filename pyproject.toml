@@ -1,0 +1,33 @@
+# ABOUTME: Project configuration for notion-backup package.
+# ABOUTME: Defines dependencies, build system, and CLI entry points.
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notion-backup"
+version = "0.1.0"
+description = "Automated backup service for Notion workspaces"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+
+dependencies = [
+    "notion-client>=2.0.0",
+    "pyyaml>=6.0",
+    "apscheduler>=3.10.0,<4.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+notion-backup = "notion_backup.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

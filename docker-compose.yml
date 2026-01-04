@@ -1,0 +1,14 @@
+# ABOUTME: Docker Compose configuration for notion-backup.
+# ABOUTME: Defines service with volume mount and environment variables.
+
+services:
+  notion-backup:
+    build: .
+    image: notion-backup:latest
+    container_name: notion-backup
+    restart: unless-stopped
+    environment:
+      - NOTION_TOKEN_PERSONAL=${NOTION_TOKEN_PERSONAL}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./data:/data
