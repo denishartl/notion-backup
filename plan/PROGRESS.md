@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Phase**: 5 - Retention & Notifications
+**Phase**: 6 - Polish & Documentation
 **Status**: Complete
 **Last Updated**: 2026-01-04
 
@@ -136,4 +136,17 @@ python -m notion_backup -c ./data/config.yaml run
 ---
 
 ## Phase 6: Polish & Documentation
-**Status**: Not Started
+**Status**: Complete
+**Completed**: 2026-01-04
+
+### Completed
+- [x] Rotating file logging (10MB, 5 backups)
+- [x] Graceful shutdown handling (done in Phase 1)
+- [x] Example config with comments (done in Phase 1)
+- [x] README with setup instructions
+- [x] All import checks pass
+
+### Features
+- Logs to both stdout (for docker logs) and /data/logs/backup.log
+- Rotating file handler with 10MB max size, 5 backup files
+- Log directory auto-created on startup

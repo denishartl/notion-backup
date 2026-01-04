@@ -3,6 +3,7 @@
 
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,13 +21,35 @@ DEFAULT_CONFIG_PATH = Path("/data/config.yaml")
 DEFAULT_BACKUP_PATH = Path("/data/backups")
 
 
-def setup_logging() -> None:
-    """Configure logging for the application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+def setup_logging(log_path: Path | None = None) -> None:
+    """Configure logging for the application.
+
+    Args:
+        log_path: Optional path for log file. If provided, enables rotating file logging.
+    """
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Console handler (stdout)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    root_logger.addHandler(console_handler)
+
+    # File handler with rotation (if log_path provided)
+    if log_path:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(logging.Formatter(log_format, date_format))
+        root_logger.addHandler(file_handler)
 
 
 def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
@@ -273,8 +296,6 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point."""
-    setup_logging()
-
     parser = argparse.ArgumentParser(
         prog="notion-backup",
         description="Automated backup service for Notion workspaces",
@@ -305,6 +326,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # Set up logging with file output in the data directory
+    log_path = args.config.parent / "logs" / "backup.log"
+    setup_logging(log_path)
 
     if args.command == "serve":
         cmd_serve(args)
