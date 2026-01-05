@@ -129,8 +129,7 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
                 future.result()  # Propagate exceptions
 
     # Fetch all databases with their rows (concurrently)
-    def fetch_database(db: dict) -> None:
-        db_id = db["id"]
+    def fetch_database(db_id: str) -> None:
         try:
             data = fetch_database_with_rows(client, db_id)
 
@@ -148,9 +147,9 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
             with results_lock:
                 errors.append({"type": "database", "id": db_id, "error": str(e)})
 
-    if content.databases:
+    if content.database_ids:
         with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
-            futures = [executor.submit(fetch_database, db) for db in content.databases]
+            futures = [executor.submit(fetch_database, db_id) for db_id in content.database_ids]
             for future in as_completed(futures):
                 future.result()  # Propagate exceptions
 

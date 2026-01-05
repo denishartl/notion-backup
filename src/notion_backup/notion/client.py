@@ -49,6 +49,7 @@ class WorkspaceContent:
     """All pages and databases accessible to the integration."""
     pages: list[dict]
     databases: list[dict]
+    database_ids: set[str]  # IDs of all databases (from search + page parents)
 
 
 class NotionClient:
@@ -61,11 +62,14 @@ class NotionClient:
         """Discover all pages and databases shared with this integration.
 
         Uses the search API with pagination to find all accessible content.
+        Databases are discovered both from search results and from page parents
+        (since database rows are pages with database_id/data_source_id parent).
         """
         logger.info("Discovering workspace content...")
 
         pages = []
         databases = []
+        database_ids: set[str] = set()
 
         cursor = None
         while True:
@@ -77,15 +81,21 @@ class NotionClient:
             for item in response["results"]:
                 if item["object"] == "page":
                     pages.append(item)
+                    # Check if page is a database row
+                    parent = item.get("parent", {})
+                    parent_type = parent.get("type")
+                    if parent_type in ("database_id", "data_source_id"):
+                        database_ids.add(parent.get(parent_type))
                 elif item["object"] == "database":
                     databases.append(item)
+                    database_ids.add(item["id"])
 
             if not response["has_more"]:
                 break
             cursor = response["next_cursor"]
 
-        logger.info(f"Found {len(pages)} pages and {len(databases)} databases")
-        return WorkspaceContent(pages=pages, databases=databases)
+        logger.info(f"Found {len(pages)} pages and {len(database_ids)} databases")
+        return WorkspaceContent(pages=pages, databases=databases, database_ids=database_ids)
 
     def get_page(self, page_id: str) -> dict:
         """Retrieve a page by ID."""
@@ -129,11 +139,16 @@ class RateLimitedNotionClient(NotionClient):
 
     @retry_on_rate_limit()
     def discover_content(self) -> WorkspaceContent:
-        """Discover all pages and databases with rate limiting."""
+        """Discover all pages and databases with rate limiting.
+
+        Databases are discovered both from search results and from page parents
+        (since database rows are pages with database_id/data_source_id parent).
+        """
         logger.info("Discovering workspace content...")
 
         pages = []
         databases = []
+        database_ids: set[str] = set()
 
         cursor = None
         while True:
@@ -146,15 +161,21 @@ class RateLimitedNotionClient(NotionClient):
             for item in response["results"]:
                 if item["object"] == "page":
                     pages.append(item)
+                    # Check if page is a database row
+                    parent = item.get("parent", {})
+                    parent_type = parent.get("type")
+                    if parent_type in ("database_id", "data_source_id"):
+                        database_ids.add(parent.get(parent_type))
                 elif item["object"] == "database":
                     databases.append(item)
+                    database_ids.add(item["id"])
 
             if not response["has_more"]:
                 break
             cursor = response["next_cursor"]
 
-        logger.info(f"Found {len(pages)} pages and {len(databases)} databases")
-        return WorkspaceContent(pages=pages, databases=databases)
+        logger.info(f"Found {len(pages)} pages and {len(database_ids)} databases")
+        return WorkspaceContent(pages=pages, databases=databases, database_ids=database_ids)
 
     @retry_on_rate_limit()
     def get_page(self, page_id: str) -> dict:
