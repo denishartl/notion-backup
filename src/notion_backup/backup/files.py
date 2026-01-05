@@ -1,14 +1,19 @@
 # ABOUTME: File download logic for embedded images and attachments.
-# ABOUTME: Extracts file URLs from blocks and downloads them.
+# ABOUTME: Extracts file URLs from blocks and downloads them concurrently.
 
 import hashlib
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Number of concurrent file downloads
+MAX_DOWNLOAD_WORKERS = 10
 
 # Block types that can contain files
 FILE_BLOCK_TYPES = {"image", "video", "file", "pdf", "audio"}
@@ -125,7 +130,7 @@ def download_files_from_blocks(
     blocks: list[dict],
     files_path: Path,
 ) -> tuple[int, list[dict]]:
-    """Download all files referenced in blocks.
+    """Download all files referenced in blocks concurrently.
 
     Args:
         blocks: List of Notion blocks (can include nested children).
@@ -135,10 +140,17 @@ def download_files_from_blocks(
         Tuple of (count of successful downloads, list of error dicts).
     """
     file_urls = extract_file_urls(blocks)
+
+    if not file_urls:
+        return 0, []
+
     downloaded = 0
     errors = []
+    lock = threading.Lock()
 
-    for file_info in file_urls:
+    def download_one(file_info: dict) -> None:
+        """Download a single file and update shared counters."""
+        nonlocal downloaded
         url = file_info["url"]
         block_id = file_info["block_id"]
         filename = generate_filename(url, block_id)
@@ -147,15 +159,23 @@ def download_files_from_blocks(
         logger.debug(f"Downloading {filename}")
 
         if download_file(url, destination):
-            downloaded += 1
+            with lock:
+                downloaded += 1
         else:
-            errors.append({
-                "type": "file",
-                "url": url,
-                "block_id": block_id,
-                "error": "Download failed after retries",
-            })
+            with lock:
+                errors.append({
+                    "type": "file",
+                    "url": url,
+                    "block_id": block_id,
+                    "error": "Download failed after retries",
+                })
             logger.warning(f"Failed to download file from block {block_id}")
+
+    with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_WORKERS) as executor:
+        futures = [executor.submit(download_one, info) for info in file_urls]
+        for future in as_completed(futures):
+            # Propagate any unexpected exceptions
+            future.result()
 
     logger.info(f"Downloaded {downloaded}/{len(file_urls)} files")
     return downloaded, errors

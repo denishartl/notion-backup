@@ -3,18 +3,24 @@
 
 import argparse
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from logging.handlers import RotatingFileHandler
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
+from .concurrency import RateLimiter
 from .config import load_config, ConfigError, WorkspaceConfig, Config
 from .scheduler import run_scheduler
-from .notion import NotionClient, fetch_page_with_blocks, fetch_database_with_rows
+from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
 from .markdown import MarkdownWriter
 from .retention import prune_old_backups
 from .notifications import send_discord_notification, should_notify
+
+# Number of concurrent API workers (limited by Notion rate limit)
+MAX_API_WORKERS = 3
 
 
 DEFAULT_CONFIG_PATH = Path("/data/config.yaml")
@@ -66,7 +72,8 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     start_time = datetime.utcnow()
 
     token = ws.get_token()
-    client = NotionClient(token)
+    rate_limiter = RateLimiter(calls_per_second=2.5)
+    client = RateLimitedNotionClient(token, rate_limiter)
 
     # Initialize storage
     storage = BackupStorage(backup_path, ws.name)
@@ -92,41 +99,60 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     databases_data = []
     errors = []
     all_blocks = []
+    results_lock = threading.Lock()
 
-    # Fetch all pages with their blocks
-    for page in content.pages:
+    # Fetch all pages with their blocks (concurrently)
+    def fetch_page(page: dict) -> None:
         page_id = page["id"]
         try:
             data = fetch_page_with_blocks(client, page_id)
-            pages_data.append(data)
-            all_blocks.extend(data.blocks)
 
-            # Save page JSON
+            # Save page JSON (thread-safe: unique filename per page)
             storage.save_page_json(page_id, {
                 "page": data.page,
                 "blocks": data.blocks,
             })
             logger.debug(f"Saved page {page_id}")
+
+            with results_lock:
+                pages_data.append(data)
+                all_blocks.extend(data.blocks)
         except Exception as e:
             logger.warning(f"Failed to fetch page {page_id}: {e}")
-            errors.append({"type": "page", "id": page_id, "error": str(e)})
+            with results_lock:
+                errors.append({"type": "page", "id": page_id, "error": str(e)})
 
-    # Fetch all databases with their rows
-    for db in content.databases:
+    if content.pages:
+        with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
+            futures = [executor.submit(fetch_page, p) for p in content.pages]
+            for future in as_completed(futures):
+                future.result()  # Propagate exceptions
+
+    # Fetch all databases with their rows (concurrently)
+    def fetch_database(db: dict) -> None:
         db_id = db["id"]
         try:
             data = fetch_database_with_rows(client, db_id)
-            databases_data.append(data)
 
-            # Save database JSON
+            # Save database JSON (thread-safe: unique filename per database)
             storage.save_database_json(db_id, {
                 "database": data.database,
                 "rows": data.rows,
             })
             logger.debug(f"Saved database {db_id}")
+
+            with results_lock:
+                databases_data.append(data)
         except Exception as e:
             logger.warning(f"Failed to fetch database {db_id}: {e}")
-            errors.append({"type": "database", "id": db_id, "error": str(e)})
+            with results_lock:
+                errors.append({"type": "database", "id": db_id, "error": str(e)})
+
+    if content.databases:
+        with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
+            futures = [executor.submit(fetch_database, db) for db in content.databases]
+            for future in as_completed(futures):
+                future.result()  # Propagate exceptions
 
     # Download embedded files
     files_downloaded, file_errors = download_files_from_blocks(
