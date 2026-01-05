@@ -13,6 +13,20 @@ Automated backups for Notion workspaces. Creates scheduled backups of all your N
 - **Discord notifications** on success or failure
 - **Docker-ready** for Raspberry Pi and other ARM devices
 
+## Installation
+
+Pull the pre-built image from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/denishartl/notion-backup:latest
+```
+
+Or pin to a specific version:
+
+```bash
+docker pull ghcr.io/denishartl/notion-backup:2025.01.05
+```
+
 ## Quick Start
 
 ### 1. Create a Notion Integration
@@ -126,8 +140,7 @@ Status values: `completed`, `completed_with_warnings`, `failed`
 ```yaml
 services:
   notion-backup:
-    build: .
-    image: notion-backup:latest
+    image: ghcr.io/denishartl/notion-backup:latest
     container_name: notion-backup
     restart: unless-stopped
     environment:
@@ -152,6 +165,8 @@ Logs are written to:
 - **`/data/logs/backup.log`** with rotation (10MB, 5 files)
 
 ## Development
+
+For normal usage, use the pre-built image from GHCR. Building locally is only needed for development.
 
 ```bash
 # Create virtual environment

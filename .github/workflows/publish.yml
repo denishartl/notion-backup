@@ -1,0 +1,63 @@
+# ABOUTME: GitHub Actions workflow to publish Docker images to GHCR.
+# ABOUTME: Manual trigger with CalVer versioning and multi-arch support.
+
+name: Publish Docker Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write      # For creating git tags
+  packages: write      # For pushing to GHCR
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for tag checking
+
+      - name: Calculate version
+        id: version
+        run: |
+          VERSION=$(date +%Y.%m.%d)
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            BUILD=2
+            while git rev-parse "v$VERSION.$BUILD" >/dev/null 2>&1; do
+              BUILD=$((BUILD + 1))
+            done
+            VERSION="$VERSION.$BUILD"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/notion-backup:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/notion-backup:latest
+
+      - name: Create git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
