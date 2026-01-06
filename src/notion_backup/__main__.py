@@ -3,11 +3,12 @@
 
 import argparse
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from logging.handlers import RotatingFileHandler
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .concurrency import RateLimiter
@@ -15,7 +16,7 @@ from .config import load_config, ConfigError, WorkspaceConfig, Config
 from .scheduler import run_scheduler
 from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows, fetch_data_source_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
-from .markdown import MarkdownWriter
+from .markdown import MarkdownWriter, get_page_title
 from .retention import prune_old_backups
 from .notifications import send_discord_notification, should_notify
 
@@ -57,6 +58,30 @@ def setup_logging(log_path: Path | None = None) -> None:
         file_handler.setFormatter(logging.Formatter(log_format, date_format))
         root_logger.addHandler(file_handler)
 
+    # Suppress noisy third-party loggers
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+class ProgressTracker:
+    """Thread-safe progress tracker with periodic logging."""
+
+    def __init__(self, total: int, label: str, logger: logging.Logger, interval: int = 10):
+        self.total = total
+        self.label = label
+        self.logger = logger
+        self.interval = interval
+        self.count = 0
+        self.lock = threading.Lock()
+        self.last_logged = 0
+
+    def increment(self) -> None:
+        with self.lock:
+            self.count += 1
+            if self.count == self.total or (self.count - self.last_logged) >= self.interval:
+                self.logger.info(f"{self.label}... {self.count}/{self.total}")
+                self.last_logged = self.count
+
 
 def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     """Backup a single workspace and return statistics.
@@ -69,7 +94,8 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
         Dict with backup statistics and manifest.
     """
     logger = logging.getLogger(__name__)
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
+    backup_start = time.monotonic()
 
     token = ws.get_token()
     rate_limiter = RateLimiter(calls_per_second=2.5)
@@ -85,10 +111,12 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     # Discover all content
     content = client.discover_content()
 
-    # Build parent map for page hierarchy
+    # Build parent map for page hierarchy and title lookup
     parent_map: dict[str, str | None] = {}
+    page_titles: dict[str, str] = {}
     for page in content.pages:
         page_id = page["id"]
+        page_titles[page_id] = get_page_title(page)
         parent = page.get("parent", {})
         if parent.get("type") == "page_id":
             parent_map[page_id] = parent.get("page_id")
@@ -102,117 +130,162 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     results_lock = threading.Lock()
 
     # Fetch all pages with their blocks (concurrently)
-    def fetch_page(page: dict) -> None:
-        page_id = page["id"]
-        try:
-            data = fetch_page_with_blocks(client, page_id)
+    total_pages = len(content.pages)
+    if total_pages > 0:
+        page_progress = ProgressTracker(total_pages, "Fetching pages", logger)
+        phase_start = time.monotonic()
 
-            # Save page JSON (thread-safe: unique filename per page)
-            storage.save_page_json(page_id, {
-                "page": data.page,
-                "blocks": data.blocks,
-            })
-            logger.debug(f"Saved page {page_id}")
+        def fetch_page(page: dict) -> None:
+            page_id = page["id"]
+            title = page_titles.get(page_id, "Untitled")
+            try:
+                data = fetch_page_with_blocks(client, page_id)
 
-            with results_lock:
-                pages_data.append(data)
-                all_blocks.extend(data.blocks)
-        except Exception as e:
-            logger.warning(f"Failed to fetch page {page_id}: {e}")
-            with results_lock:
-                errors.append({"type": "page", "id": page_id, "error": str(e)})
+                # Save page JSON (thread-safe: unique filename per page)
+                storage.save_page_json(page_id, {
+                    "page": data.page,
+                    "blocks": data.blocks,
+                })
+                logger.debug(f"Saved page '{title}' ({page_id})")
 
-    if content.pages:
+                with results_lock:
+                    pages_data.append(data)
+                    all_blocks.extend(data.blocks)
+            except Exception as e:
+                logger.warning(f"Failed to fetch page '{title}' ({page_id}): {e}")
+                with results_lock:
+                    errors.append({"type": "page", "id": page_id, "title": title, "error": str(e)})
+            finally:
+                page_progress.increment()
+
         with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
             futures = [executor.submit(fetch_page, p) for p in content.pages]
             for future in as_completed(futures):
                 future.result()  # Propagate exceptions
 
+        phase_duration = time.monotonic() - phase_start
+        logger.info(f"Fetched {len(pages_data)} pages in {phase_duration:.1f}s")
+
     # Fetch all databases with their rows (concurrently)
-    def fetch_database(db_id: str) -> None:
-        try:
-            data = fetch_database_with_rows(client, db_id)
+    total_databases = len(content.database_ids)
+    if total_databases > 0:
+        db_progress = ProgressTracker(total_databases, "Fetching databases", logger, interval=5)
+        phase_start = time.monotonic()
 
-            # Save database JSON (thread-safe: unique filename per database)
-            storage.save_database_json(db_id, {
-                "database": data.database,
-                "rows": data.rows,
-            })
-            logger.debug(f"Saved database {db_id}")
+        def fetch_database(db_id: str) -> None:
+            try:
+                data = fetch_database_with_rows(client, db_id)
+                db_title = data.database.get("title", [{}])
+                db_name = db_title[0].get("plain_text", "Untitled") if db_title else "Untitled"
 
-            with results_lock:
-                databases_data.append(data)
-        except Exception as e:
-            logger.warning(f"Failed to fetch database {db_id}: {e}")
-            with results_lock:
-                errors.append({"type": "database", "id": db_id, "error": str(e)})
+                # Save database JSON (thread-safe: unique filename per database)
+                storage.save_database_json(db_id, {
+                    "database": data.database,
+                    "rows": data.rows,
+                })
+                logger.debug(f"Saved database '{db_name}' ({db_id})")
 
-    if content.database_ids:
+                with results_lock:
+                    databases_data.append(data)
+            except Exception as e:
+                logger.warning(f"Failed to fetch database ({db_id}): {e}")
+                with results_lock:
+                    errors.append({"type": "database", "id": db_id, "error": str(e)})
+            finally:
+                db_progress.increment()
+
         with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
             futures = [executor.submit(fetch_database, db_id) for db_id in content.database_ids]
             for future in as_completed(futures):
                 future.result()  # Propagate exceptions
 
+        phase_duration = time.monotonic() - phase_start
+        logger.info(f"Fetched {len(content.database_ids)} databases in {phase_duration:.1f}s")
+
     # Fetch all data sources with their rows (concurrently)
-    def fetch_data_source(ds_id: str) -> None:
-        try:
-            data = fetch_data_source_with_rows(client, ds_id)
+    total_data_sources = len(content.data_source_ids)
+    if total_data_sources > 0:
+        ds_progress = ProgressTracker(total_data_sources, "Fetching data sources", logger, interval=5)
+        phase_start = time.monotonic()
 
-            # Save data source JSON (thread-safe: unique filename per data source)
-            storage.save_database_json(ds_id, {
-                "database": data.database,
-                "rows": data.rows,
-            })
-            logger.debug(f"Saved data source {ds_id}")
+        def fetch_data_source(ds_id: str) -> None:
+            try:
+                data = fetch_data_source_with_rows(client, ds_id)
+                ds_title = data.database.get("title", [{}])
+                ds_name = ds_title[0].get("plain_text", "Untitled") if ds_title else "Untitled"
 
-            with results_lock:
-                databases_data.append(data)
-        except Exception as e:
-            logger.warning(f"Failed to fetch data source {ds_id}: {e}")
-            with results_lock:
-                errors.append({"type": "data_source", "id": ds_id, "error": str(e)})
+                # Save data source JSON (thread-safe: unique filename per data source)
+                storage.save_database_json(ds_id, {
+                    "database": data.database,
+                    "rows": data.rows,
+                })
+                logger.debug(f"Saved data source '{ds_name}' ({ds_id})")
 
-    if content.data_source_ids:
+                with results_lock:
+                    databases_data.append(data)
+            except Exception as e:
+                logger.warning(f"Failed to fetch data source ({ds_id}): {e}")
+                with results_lock:
+                    errors.append({"type": "data_source", "id": ds_id, "error": str(e)})
+            finally:
+                ds_progress.increment()
+
         with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
             futures = [executor.submit(fetch_data_source, ds_id) for ds_id in content.data_source_ids]
             for future in as_completed(futures):
                 future.result()  # Propagate exceptions
 
+        phase_duration = time.monotonic() - phase_start
+        logger.info(f"Fetched {len(content.data_source_ids)} data sources in {phase_duration:.1f}s")
+
     # Download embedded files
-    files_downloaded, file_errors = download_files_from_blocks(
+    phase_start = time.monotonic()
+    files_downloaded, files_size, file_errors = download_files_from_blocks(
         all_blocks,
         storage.files_path,
     )
     errors.extend(file_errors)
+    if files_downloaded > 0:
+        phase_duration = time.monotonic() - phase_start
+        size_mb = files_size / (1024 * 1024)
+        logger.info(f"Downloaded {files_downloaded} files ({size_mb:.1f} MB) in {phase_duration:.1f}s")
 
     # Write markdown files (after downloading files so links work)
     # Sort pages so parents are written before children
     pages_by_id = {data.page["id"]: data for data in pages_data}
     written_pages: set[str] = set()
+    total_to_write = len(pages_by_id)
 
-    def write_page_recursive(page_id: str) -> None:
-        if page_id in written_pages:
-            return
-        if page_id not in pages_by_id:
-            return
+    if total_to_write > 0:
+        md_progress = ProgressTracker(total_to_write, "Writing markdown", logger)
+        phase_start = time.monotonic()
 
-        # Write parent first if it exists
-        parent_id = parent_map.get(page_id)
-        if parent_id and parent_id in pages_by_id:
-            write_page_recursive(parent_id)
+        def write_page_recursive(page_id: str) -> None:
+            if page_id in written_pages:
+                return
+            if page_id not in pages_by_id:
+                return
 
-        # Write this page
-        data = pages_by_id[page_id]
-        try:
-            md_writer.write_page(data.page, data.blocks, parent_id)
-        except Exception as e:
-            logger.warning(f"Failed to write markdown for page {page_id}: {e}")
-        written_pages.add(page_id)
+            # Write parent first if it exists
+            parent_id = parent_map.get(page_id)
+            if parent_id and parent_id in pages_by_id:
+                write_page_recursive(parent_id)
 
-    for page_id in pages_by_id:
-        write_page_recursive(page_id)
+            # Write this page
+            data = pages_by_id[page_id]
+            title = get_page_title(data.page)
+            try:
+                md_writer.write_page(data.page, data.blocks, parent_id)
+            except Exception as e:
+                logger.warning(f"Failed to write markdown for '{title}' ({page_id}): {e}")
+            written_pages.add(page_id)
+            md_progress.increment()
 
-    logger.info(f"Wrote {len(written_pages)} markdown files")
+        for page_id in pages_by_id:
+            write_page_recursive(page_id)
+
+        phase_duration = time.monotonic() - phase_start
+        logger.info(f"Wrote {len(written_pages)} markdown files in {phase_duration:.1f}s")
 
     # Create and save manifest
     manifest = create_manifest(
@@ -224,11 +297,12 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     )
     storage.save_manifest(manifest.to_dict())
 
+    total_duration = time.monotonic() - backup_start
     logger.info(
-        f"Workspace '{ws.name}': {manifest.pages_backed_up} pages, "
+        f"Backup complete: {manifest.pages_backed_up} pages, "
         f"{manifest.databases_backed_up} databases, "
         f"{manifest.files_downloaded} files, "
-        f"{len(errors)} errors [{manifest.status}]"
+        f"{len(errors)} errors [{manifest.status}] ({total_duration:.1f}s total)"
     )
 
     return {

@@ -97,7 +97,7 @@ def generate_filename(url: str, block_id: str) -> str:
     return f"{short_hash}-{original_name}"
 
 
-def download_file(url: str, destination: Path) -> bool:
+def download_file(url: str, destination: Path) -> int:
     """Download a file from URL to destination.
 
     Args:
@@ -105,31 +105,33 @@ def download_file(url: str, destination: Path) -> bool:
         destination: Path to save the file.
 
     Returns:
-        True if successful, False otherwise.
+        File size in bytes if successful, -1 otherwise.
     """
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
             response.raise_for_status()
 
+            size = 0
             with open(destination, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
+                    size += len(chunk)
 
-            return True
+            return size
 
         except requests.RequestException as e:
             logger.warning(f"Download attempt {attempt + 1}/{MAX_RETRIES} failed: {e}")
             if attempt == MAX_RETRIES - 1:
-                return False
+                return -1
 
-    return False
+    return -1
 
 
 def download_files_from_blocks(
     blocks: list[dict],
     files_path: Path,
-) -> tuple[int, list[dict]]:
+) -> tuple[int, int, list[dict]]:
     """Download all files referenced in blocks concurrently.
 
     Args:
@@ -137,20 +139,23 @@ def download_files_from_blocks(
         files_path: Directory to save files to.
 
     Returns:
-        Tuple of (count of successful downloads, list of error dicts).
+        Tuple of (count of successful downloads, total bytes downloaded, list of error dicts).
     """
     file_urls = extract_file_urls(blocks)
 
     if not file_urls:
-        return 0, []
+        return 0, 0, []
 
     downloaded = 0
+    total_size = 0
+    completed = 0
     errors = []
     lock = threading.Lock()
+    total_files = len(file_urls)
 
     def download_one(file_info: dict) -> None:
         """Download a single file and update shared counters."""
-        nonlocal downloaded
+        nonlocal downloaded, total_size, completed
         url = file_info["url"]
         block_id = file_info["block_id"]
         filename = generate_filename(url, block_id)
@@ -158,18 +163,24 @@ def download_files_from_blocks(
 
         logger.debug(f"Downloading {filename}")
 
-        if download_file(url, destination):
-            with lock:
+        size = download_file(url, destination)
+        with lock:
+            completed += 1
+            if size >= 0:
                 downloaded += 1
-        else:
-            with lock:
+                total_size += size
+            else:
                 errors.append({
                     "type": "file",
                     "url": url,
                     "block_id": block_id,
                     "error": "Download failed after retries",
                 })
-            logger.warning(f"Failed to download file from block {block_id}")
+                logger.warning(f"Failed to download file from block {block_id}")
+
+            # Log progress every 10 files or at the end
+            if completed == total_files or completed % 10 == 0:
+                logger.info(f"Downloading files... {completed}/{total_files}")
 
     with ThreadPoolExecutor(max_workers=MAX_DOWNLOAD_WORKERS) as executor:
         futures = [executor.submit(download_one, info) for info in file_urls]
@@ -177,5 +188,4 @@ def download_files_from_blocks(
             # Propagate any unexpected exceptions
             future.result()
 
-    logger.info(f"Downloaded {downloaded}/{len(file_urls)} files")
-    return downloaded, errors
+    return downloaded, total_size, errors

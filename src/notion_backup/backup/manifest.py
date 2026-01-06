@@ -2,7 +2,7 @@
 # ABOUTME: Creates a JSON summary of backup contents and status.
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 
@@ -20,7 +20,7 @@ class BackupManifest:
 
     def __post_init__(self):
         if not self.timestamp:
-            self.timestamp = datetime.utcnow().isoformat() + "Z"
+            self.timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def to_dict(self) -> dict:
         """Convert manifest to dictionary for JSON serialization."""
@@ -46,7 +46,7 @@ def create_manifest(
     Returns:
         BackupManifest with computed fields.
     """
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
     duration = (end_time - start_time).total_seconds()
 
     # Determine status based on errors
@@ -61,7 +61,7 @@ def create_manifest(
         status = "completed"
 
     return BackupManifest(
-        timestamp=start_time.isoformat() + "Z",
+        timestamp=start_time.isoformat().replace("+00:00", "Z"),
         duration_seconds=round(duration, 2),
         pages_backed_up=pages_count,
         databases_backed_up=databases_count,
