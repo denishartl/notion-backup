@@ -37,18 +37,20 @@ def get_rich_text(rich_text: list[dict]) -> str:
 def get_page_title(page: dict) -> str:
     """Extract title from page properties."""
     props = page.get("properties", {})
+    if not props:
+        return "Untitled"
 
     # Title property (for database pages)
-    if "title" in props:
+    if "title" in props and props["title"]:
         return get_rich_text(props["title"].get("title", []))
 
     # Name property (common in databases)
-    if "Name" in props and props["Name"].get("type") == "title":
+    if "Name" in props and props["Name"] and props["Name"].get("type") == "title":
         return get_rich_text(props["Name"].get("title", []))
 
     # Check all properties for title type
     for prop in props.values():
-        if prop.get("type") == "title":
+        if prop and prop.get("type") == "title":
             return get_rich_text(prop.get("title", []))
 
     return "Untitled"
@@ -133,7 +135,7 @@ def block_to_markdown(block: dict, files_path: str = "files", indent: int = 0) -
     # Callout
     if block_type == "callout":
         text = get_rich_text(block_data.get("rich_text", []))
-        icon = block_data.get("icon", {})
+        icon = block_data.get("icon") or {}
         emoji = icon.get("emoji", "💡") if icon.get("type") == "emoji" else "💡"
         result = f"{prefix}> {emoji} {text}\n"
         if "children" in block:
@@ -299,6 +301,8 @@ def blocks_to_markdown(blocks: list[dict], files_path: str = "files", indent: in
 
 def extract_property_value(prop: dict) -> Any:
     """Extract a simple value from a Notion property."""
+    if not prop:
+        return None
     prop_type = prop.get("type")
 
     if prop_type == "title":
@@ -374,6 +378,8 @@ def page_to_frontmatter(page: dict) -> str:
     properties = {}
 
     for name, prop in props.items():
+        if not prop:
+            continue
         # Skip title property (it's the page title)
         if prop.get("type") == "title":
             continue

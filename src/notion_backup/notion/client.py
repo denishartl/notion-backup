@@ -49,7 +49,8 @@ class WorkspaceContent:
     """All pages and databases accessible to the integration."""
     pages: list[dict]
     databases: list[dict]
-    database_ids: set[str]  # IDs of all databases (from search + page parents)
+    database_ids: set[str]  # IDs from search results (type "database")
+    data_source_ids: set[str]  # IDs from page parents (type "data_source_id")
 
 
 class NotionClient:
@@ -62,14 +63,14 @@ class NotionClient:
         """Discover all pages and databases shared with this integration.
 
         Uses the search API with pagination to find all accessible content.
-        Databases are discovered both from search results and from page parents
-        (since database rows are pages with database_id/data_source_id parent).
+        Data sources are discovered from page parents (pages with data_source_id parent).
         """
         logger.info("Discovering workspace content...")
 
         pages = []
         databases = []
         database_ids: set[str] = set()
+        data_source_ids: set[str] = set()
 
         cursor = None
         while True:
@@ -81,11 +82,13 @@ class NotionClient:
             for item in response["results"]:
                 if item["object"] == "page":
                     pages.append(item)
-                    # Check if page is a database row
+                    # Check if page is a database/data source row
                     parent = item.get("parent", {})
                     parent_type = parent.get("type")
-                    if parent_type in ("database_id", "data_source_id"):
-                        database_ids.add(parent.get(parent_type))
+                    if parent_type == "database_id":
+                        database_ids.add(parent.get("database_id"))
+                    elif parent_type == "data_source_id":
+                        data_source_ids.add(parent.get("data_source_id"))
                 elif item["object"] == "database":
                     databases.append(item)
                     database_ids.add(item["id"])
@@ -94,8 +97,14 @@ class NotionClient:
                 break
             cursor = response["next_cursor"]
 
-        logger.info(f"Found {len(pages)} pages and {len(database_ids)} databases")
-        return WorkspaceContent(pages=pages, databases=databases, database_ids=database_ids)
+        total_dbs = len(database_ids) + len(data_source_ids)
+        logger.info(f"Found {len(pages)} pages and {total_dbs} databases/data sources")
+        return WorkspaceContent(
+            pages=pages,
+            databases=databases,
+            database_ids=database_ids,
+            data_source_ids=data_source_ids,
+        )
 
     def get_page(self, page_id: str) -> dict:
         """Retrieve a page by ID."""
@@ -117,6 +126,17 @@ class NotionClient:
         return collect_paginated_api(
             self._client.databases.query,
             database_id=database_id,
+        )
+
+    def get_data_source(self, data_source_id: str) -> dict:
+        """Retrieve data source schema by ID."""
+        return self._client.data_sources.retrieve(data_source_id=data_source_id)
+
+    def query_data_source(self, data_source_id: str) -> list[dict]:
+        """Query all rows from a data source."""
+        return collect_paginated_api(
+            self._client.data_sources.query,
+            data_source_id=data_source_id,
         )
 
 
@@ -141,14 +161,14 @@ class RateLimitedNotionClient(NotionClient):
     def discover_content(self) -> WorkspaceContent:
         """Discover all pages and databases with rate limiting.
 
-        Databases are discovered both from search results and from page parents
-        (since database rows are pages with database_id/data_source_id parent).
+        Data sources are discovered from page parents (pages with data_source_id parent).
         """
         logger.info("Discovering workspace content...")
 
         pages = []
         databases = []
         database_ids: set[str] = set()
+        data_source_ids: set[str] = set()
 
         cursor = None
         while True:
@@ -161,11 +181,13 @@ class RateLimitedNotionClient(NotionClient):
             for item in response["results"]:
                 if item["object"] == "page":
                     pages.append(item)
-                    # Check if page is a database row
+                    # Check if page is a database/data source row
                     parent = item.get("parent", {})
                     parent_type = parent.get("type")
-                    if parent_type in ("database_id", "data_source_id"):
-                        database_ids.add(parent.get(parent_type))
+                    if parent_type == "database_id":
+                        database_ids.add(parent.get("database_id"))
+                    elif parent_type == "data_source_id":
+                        data_source_ids.add(parent.get("data_source_id"))
                 elif item["object"] == "database":
                     databases.append(item)
                     database_ids.add(item["id"])
@@ -174,8 +196,14 @@ class RateLimitedNotionClient(NotionClient):
                 break
             cursor = response["next_cursor"]
 
-        logger.info(f"Found {len(pages)} pages and {len(database_ids)} databases")
-        return WorkspaceContent(pages=pages, databases=databases, database_ids=database_ids)
+        total_dbs = len(database_ids) + len(data_source_ids)
+        logger.info(f"Found {len(pages)} pages and {total_dbs} databases/data sources")
+        return WorkspaceContent(
+            pages=pages,
+            databases=databases,
+            database_ids=database_ids,
+            data_source_ids=data_source_ids,
+        )
 
     @retry_on_rate_limit()
     def get_page(self, page_id: str) -> dict:
@@ -205,4 +233,19 @@ class RateLimitedNotionClient(NotionClient):
         return collect_paginated_api(
             self._client.databases.query,
             database_id=database_id,
+        )
+
+    @retry_on_rate_limit()
+    def get_data_source(self, data_source_id: str) -> dict:
+        """Retrieve data source schema by ID with rate limiting."""
+        self._rate_limiter.acquire()
+        return self._client.data_sources.retrieve(data_source_id=data_source_id)
+
+    @retry_on_rate_limit()
+    def query_data_source(self, data_source_id: str) -> list[dict]:
+        """Query all rows from a data source with rate limiting."""
+        self._rate_limiter.acquire()
+        return collect_paginated_api(
+            self._client.data_sources.query,
+            data_source_id=data_source_id,
         )

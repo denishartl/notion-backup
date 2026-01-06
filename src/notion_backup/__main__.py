@@ -13,7 +13,7 @@ from pathlib import Path
 from .concurrency import RateLimiter
 from .config import load_config, ConfigError, WorkspaceConfig, Config
 from .scheduler import run_scheduler
-from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows
+from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows, fetch_data_source_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
 from .markdown import MarkdownWriter
 from .retention import prune_old_backups
@@ -150,6 +150,31 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     if content.database_ids:
         with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
             futures = [executor.submit(fetch_database, db_id) for db_id in content.database_ids]
+            for future in as_completed(futures):
+                future.result()  # Propagate exceptions
+
+    # Fetch all data sources with their rows (concurrently)
+    def fetch_data_source(ds_id: str) -> None:
+        try:
+            data = fetch_data_source_with_rows(client, ds_id)
+
+            # Save data source JSON (thread-safe: unique filename per data source)
+            storage.save_database_json(ds_id, {
+                "database": data.database,
+                "rows": data.rows,
+            })
+            logger.debug(f"Saved data source {ds_id}")
+
+            with results_lock:
+                databases_data.append(data)
+        except Exception as e:
+            logger.warning(f"Failed to fetch data source {ds_id}: {e}")
+            with results_lock:
+                errors.append({"type": "data_source", "id": ds_id, "error": str(e)})
+
+    if content.data_source_ids:
+        with ThreadPoolExecutor(max_workers=MAX_API_WORKERS) as executor:
+            futures = [executor.submit(fetch_data_source, ds_id) for ds_id in content.data_source_ids]
             for future in as_completed(futures):
                 future.result()  # Propagate exceptions
 
