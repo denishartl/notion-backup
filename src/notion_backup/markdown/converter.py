@@ -258,7 +258,10 @@ def block_to_markdown(block: dict, files_path: str = "files", indent: int = 0) -
 
 
 def _url_to_filename(url: str, block_id: str) -> str:
-    """Generate filename from URL matching the download logic."""
+    """Generate filename from URL matching the download logic.
+
+    Handles Notion's image proxy which hex-encodes external URLs in the path.
+    """
     import hashlib
     from pathlib import Path
     from urllib.parse import urlparse, unquote
@@ -270,13 +273,46 @@ def _url_to_filename(url: str, block_id: str) -> str:
     if "?" in original_name:
         original_name = original_name.split("?")[0]
 
+    # Detect hex-encoded URLs (common with Notion's image proxy for external images)
+    if len(original_name) > 50 and _is_hex_encoded_url(original_name):
+        try:
+            decoded = bytes.fromhex(original_name).decode("utf-8")
+            if decoded.startswith(("http://", "https://")):
+                decoded_parsed = urlparse(decoded)
+                decoded_name = Path(unquote(decoded_parsed.path)).name
+                if decoded_name and decoded_name != "/":
+                    original_name = decoded_name.split("?")[0] if "?" in decoded_name else decoded_name
+        except (ValueError, UnicodeDecodeError):
+            pass
+
     if not original_name or original_name == "/":
         original_name = "file"
 
     hash_input = f"{block_id}:{url}"
     short_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
 
+    # Truncate if still too long (filesystem limit is 255, stay well under)
+    max_name_len = 200 - len(short_hash) - 1
+    if len(original_name) > max_name_len:
+        ext = Path(original_name).suffix
+        if ext:
+            base = original_name[: max_name_len - len(ext) - 3]
+            original_name = f"{base}...{ext}"
+        else:
+            original_name = original_name[: max_name_len - 3] + "..."
+
     return f"{short_hash}-{original_name}"
+
+
+def _is_hex_encoded_url(s: str) -> bool:
+    """Check if string is a hex-encoded URL."""
+    if len(s) % 2 != 0:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
 
 
 def blocks_to_markdown(blocks: list[dict], files_path: str = "files", indent: int = 0) -> str:

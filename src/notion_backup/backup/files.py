@@ -66,10 +66,22 @@ def extract_file_urls(blocks: list[dict], urls: list[dict] | None = None) -> lis
     return urls
 
 
+def _is_hex_string(s: str) -> bool:
+    """Check if string contains only hexadecimal characters."""
+    if len(s) % 2 != 0:
+        return False
+    try:
+        int(s, 16)
+        return True
+    except ValueError:
+        return False
+
+
 def generate_filename(url: str, block_id: str) -> str:
     """Generate a unique filename for a downloaded file.
 
     Uses a hash prefix for uniqueness and preserves original extension.
+    Handles Notion's image proxy which hex-encodes external URLs in the path.
 
     Args:
         url: The file URL.
@@ -86,6 +98,18 @@ def generate_filename(url: str, block_id: str) -> str:
     if "?" in original_name:
         original_name = original_name.split("?")[0]
 
+    # Detect hex-encoded URLs (common with Notion's image proxy for external images)
+    if len(original_name) > 50 and _is_hex_string(original_name):
+        try:
+            decoded = bytes.fromhex(original_name).decode("utf-8")
+            if decoded.startswith(("http://", "https://")):
+                decoded_parsed = urlparse(decoded)
+                decoded_name = Path(unquote(decoded_parsed.path)).name
+                if decoded_name and decoded_name != "/":
+                    original_name = decoded_name.split("?")[0] if "?" in decoded_name else decoded_name
+        except (ValueError, UnicodeDecodeError):
+            pass  # Not valid hex or not decodable
+
     # If no filename, use a generic one
     if not original_name or original_name == "/":
         original_name = "file"
@@ -93,6 +117,16 @@ def generate_filename(url: str, block_id: str) -> str:
     # Create a short hash for uniqueness
     hash_input = f"{block_id}:{url}"
     short_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+
+    # Truncate if still too long (filesystem limit is 255, stay well under)
+    max_name_len = 200 - len(short_hash) - 1
+    if len(original_name) > max_name_len:
+        ext = Path(original_name).suffix
+        if ext:
+            base = original_name[: max_name_len - len(ext) - 3]
+            original_name = f"{base}...{ext}"
+        else:
+            original_name = original_name[: max_name_len - 3] + "..."
 
     return f"{short_hash}-{original_name}"
 
