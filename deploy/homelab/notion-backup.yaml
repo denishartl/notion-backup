@@ -1,0 +1,11 @@
+# App configuration for notion-backup.
+# Commit to stacks/backup/config/notion-backup.yaml in denishartl/homelab.
+# The backup-stack-service.yaml mounts this file read-only at /data/config.yaml inside the container.
+
+schedule: "0 3 * * *"
+
+retention_count: 7
+
+workspaces:
+  - name: personal
+    token_env: NOTION_TOKEN_PERSONAL
