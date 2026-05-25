@@ -21,6 +21,8 @@ RUN mkdir -p /data && chown appuser:appuser /data
 # Switch to non-root user
 USER appuser
 
+EXPOSE 9101
+
 # Default command
 ENTRYPOINT ["python", "-m", "notion_backup"]
 CMD ["serve"]

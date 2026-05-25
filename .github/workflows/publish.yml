@@ -1,9 +1,11 @@
 # ABOUTME: GitHub Actions workflow to publish Docker images to GHCR.
-# ABOUTME: Manual trigger with CalVer versioning and multi-arch support.
+# ABOUTME: Triggers on push to main and manual dispatch; uses CalVer versioning and multi-arch support.
 
 name: Publish Docker Image
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
