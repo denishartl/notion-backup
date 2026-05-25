@@ -15,8 +15,9 @@ COPY src/ src/
 # Install the package
 RUN pip install --no-cache-dir .
 
-# Create data directory
-RUN mkdir -p /data && chown appuser:appuser /data
+# Create data directories owned by the non-root user. Pre-creating /data/backups
+# means a named volume mounted there inherits appuser ownership instead of root.
+RUN mkdir -p /data/backups /data/logs && chown -R appuser:appuser /data
 
 # Switch to non-root user
 USER appuser
