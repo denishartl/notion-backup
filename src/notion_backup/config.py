@@ -1,7 +1,7 @@
 # ABOUTME: Configuration loading and validation for notion-backup.
 # ABOUTME: Parses config.yaml into validated dataclasses.
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import os
 import yaml
@@ -27,23 +27,11 @@ class WorkspaceConfig:
 
 
 @dataclass
-class NotificationConfig:
-    """Configuration for notifications."""
-    discord_webhook_url: str | None = None
-    notify_on: str = "error"  # "always" or "error"
-
-    def __post_init__(self):
-        if self.notify_on not in ("always", "error"):
-            raise ConfigError(f"notify_on must be 'always' or 'error', got '{self.notify_on}'")
-
-
-@dataclass
 class Config:
     """Main configuration for notion-backup."""
     schedule: str
     retention_count: int
     workspaces: list[WorkspaceConfig]
-    notifications: NotificationConfig = field(default_factory=NotificationConfig)
 
     def __post_init__(self):
         if self.retention_count < 1:
@@ -83,16 +71,8 @@ def load_config(path: Path) -> Config:
             raise ConfigError(f"Workspace '{ws.get('name', i)}' missing 'token_env'")
         workspaces.append(WorkspaceConfig(name=ws["name"], token_env=ws["token_env"]))
 
-    # Parse notifications
-    notif_raw = raw.get("notifications", {})
-    notifications = NotificationConfig(
-        discord_webhook_url=notif_raw.get("discord_webhook_url"),
-        notify_on=notif_raw.get("notify_on", "error"),
-    )
-
     return Config(
         schedule=raw["schedule"],
         retention_count=raw["retention_count"],
         workspaces=workspaces,
-        notifications=notifications,
     )

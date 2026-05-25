@@ -18,7 +18,6 @@ from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_datab
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
 from .markdown import MarkdownWriter, get_page_title
 from .retention import prune_old_backups
-from .notifications import send_discord_notification, should_notify
 
 # Number of concurrent API workers (limited by Notion rate limit)
 MAX_API_WORKERS = 3
@@ -360,23 +359,6 @@ def run_backup(config: Config, workspace_name: str | None = None, backup_path: P
                 "backup_path": str(backup_path / ws.name),
                 "error_list": [{"type": "backup", "error": str(e)}],
             }
-
-        # Send notification if configured
-        webhook_url = config.notifications.discord_webhook_url
-        if webhook_url and stats:
-            notify_on = config.notifications.notify_on
-            if should_notify(notify_on, stats["status"]):
-                send_discord_notification(
-                    webhook_url=webhook_url,
-                    workspace_name=ws.name,
-                    status=stats["status"],
-                    pages=stats["pages"],
-                    databases=stats["databases"],
-                    files=stats["files"],
-                    duration_seconds=stats.get("duration_seconds", 0),
-                    errors=stats.get("error_list", []),
-                    backup_path=stats["backup_path"],
-                )
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
