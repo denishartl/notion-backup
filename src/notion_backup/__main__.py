@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .concurrency import RateLimiter
 from .config import load_config, ConfigError, WorkspaceConfig, Config
+from .logging_config import JsonLogFormatter
 from .scheduler import run_scheduler
 from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows, fetch_data_source_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
@@ -33,16 +34,13 @@ def setup_logging(log_path: Path | None = None) -> None:
     Args:
         log_path: Optional path for log file. If provided, enables rotating file logging.
     """
-    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    date_format = "%Y-%m-%d %H:%M:%S"
-
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
     # Console handler (stdout)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    console_handler.setFormatter(JsonLogFormatter())
     root_logger.addHandler(console_handler)
 
     # File handler with rotation (if log_path provided)
@@ -54,7 +52,7 @@ def setup_logging(log_path: Path | None = None) -> None:
             backupCount=5,
             encoding="utf-8",
         )
-        file_handler.setFormatter(logging.Formatter(log_format, date_format))
+        file_handler.setFormatter(JsonLogFormatter())
         root_logger.addHandler(file_handler)
 
     # Suppress noisy third-party loggers
