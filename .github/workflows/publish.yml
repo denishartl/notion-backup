@@ -53,6 +53,11 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # Publish a plain multi-arch manifest list without build attestations.
+          # Attestation manifests add unknown/unknown entries to the OCI index that
+          # Portainer and Watchtower mishandle when pulling/inspecting from GHCR.
+          provenance: false
+          sbom: false
           tags: |
             ghcr.io/${{ github.repository_owner }}/notion-backup:${{ steps.version.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/notion-backup:latest
