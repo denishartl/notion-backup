@@ -46,18 +46,22 @@ def extract_file_urls(blocks: list[dict], urls: list[dict] | None = None) -> lis
             block_data = block.get(block_type, {})
 
             # Files can be external or hosted by Notion
+            url = None
             if "file" in block_data:
-                urls.append({
-                    "url": block_data["file"]["url"],
-                    "block_id": block_id,
-                    "type": block_type,
-                })
+                url = block_data["file"].get("url")
             elif "external" in block_data:
+                url = block_data["external"].get("url")
+
+            # Empty/blank URLs are broken or unset Notion file blocks; there is
+            # nothing to download, so skip them rather than queue a doomed request.
+            if url and url.strip():
                 urls.append({
-                    "url": block_data["external"]["url"],
+                    "url": url,
                     "block_id": block_id,
                     "type": block_type,
                 })
+            elif url is not None:
+                logger.debug(f"Skipping block {block_id} with empty file URL")
 
         # Recursively check children
         if "children" in block:

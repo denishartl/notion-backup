@@ -4,9 +4,15 @@
 import logging
 from dataclasses import dataclass
 
+from notion_client.errors import APIErrorCode, APIResponseError
+
 from .client import NotionClient
 
 logger = logging.getLogger(__name__)
+
+# Errors meaning a child block is permanently inaccessible (not shared with
+# the integration). These are skipped so the rest of the page is still backed up.
+PERMANENT_BLOCK_ERRORS = {APIErrorCode.ObjectNotFound, APIErrorCode.RestrictedResource}
 
 # Block types that can have children
 BLOCKS_WITH_CHILDREN = {
@@ -50,8 +56,15 @@ def fetch_blocks_recursive(client: NotionClient, block_id: str) -> list[dict]:
         has_children = block.get("has_children", False)
 
         if has_children and block_type in BLOCKS_WITH_CHILDREN:
-            children = fetch_blocks_recursive(client, block["id"])
-            block["children"] = children
+            try:
+                block["children"] = fetch_blocks_recursive(client, block["id"])
+            except APIResponseError as e:
+                if e.code in PERMANENT_BLOCK_ERRORS:
+                    logger.warning(
+                        f"Skipping inaccessible child block {block['id']}: {e}"
+                    )
+                else:
+                    raise
 
     return blocks
 
