@@ -11,18 +11,23 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from prometheus_client import start_http_server
+
 from .concurrency import RateLimiter
 from .config import load_config, ConfigError, WorkspaceConfig, Config
+from .logging_config import JsonLogFormatter
+from .metrics import BackupMetrics
 from .scheduler import run_scheduler
 from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows, fetch_data_source_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
 from .markdown import MarkdownWriter, get_page_title
 from .retention import prune_old_backups
-from .notifications import send_discord_notification, should_notify
 
 # Number of concurrent API workers (limited by Notion rate limit)
 MAX_API_WORKERS = 3
 
+# Port the Prometheus metrics HTTP server listens on
+METRICS_PORT = 9101
 
 DEFAULT_CONFIG_PATH = Path("/data/config.yaml")
 DEFAULT_BACKUP_PATH = Path("/data/backups")
@@ -34,16 +39,13 @@ def setup_logging(log_path: Path | None = None) -> None:
     Args:
         log_path: Optional path for log file. If provided, enables rotating file logging.
     """
-    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    date_format = "%Y-%m-%d %H:%M:%S"
-
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
     # Console handler (stdout)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(logging.Formatter(log_format, date_format))
+    console_handler.setFormatter(JsonLogFormatter())
     root_logger.addHandler(console_handler)
 
     # File handler with rotation (if log_path provided)
@@ -55,7 +57,7 @@ def setup_logging(log_path: Path | None = None) -> None:
             backupCount=5,
             encoding="utf-8",
         )
-        file_handler.setFormatter(logging.Formatter(log_format, date_format))
+        file_handler.setFormatter(JsonLogFormatter())
         root_logger.addHandler(file_handler)
 
     # Suppress noisy third-party loggers
@@ -109,7 +111,11 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
     md_writer = MarkdownWriter(storage.markdown_path, storage.files_path)
 
     # Discover all content
+    # Keys present in phases vary by workspace content (pages, databases, data_sources, files, markdown only included when that content type was processed)
+    phases: dict[str, float] = {}
+    phase_start = time.monotonic()
     content = client.discover_content()
+    phases["discover"] = time.monotonic() - phase_start
 
     # Build parent map for page hierarchy and title lookup
     parent_map: dict[str, str | None] = {}
@@ -164,6 +170,7 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
                 future.result()  # Propagate exceptions
 
         phase_duration = time.monotonic() - phase_start
+        phases["pages"] = phase_duration
         logger.info(f"Fetched {len(pages_data)} pages in {phase_duration:.1f}s")
 
     # Fetch all databases with their rows (concurrently)
@@ -200,6 +207,7 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
                 future.result()  # Propagate exceptions
 
         phase_duration = time.monotonic() - phase_start
+        phases["databases"] = phase_duration
         logger.info(f"Fetched {len(content.database_ids)} databases in {phase_duration:.1f}s")
 
     # Fetch all data sources with their rows (concurrently)
@@ -236,6 +244,7 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
                 future.result()  # Propagate exceptions
 
         phase_duration = time.monotonic() - phase_start
+        phases["data_sources"] = phase_duration
         logger.info(f"Fetched {len(content.data_source_ids)} data sources in {phase_duration:.1f}s")
 
     # Download embedded files
@@ -245,8 +254,9 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
         storage.files_path,
     )
     errors.extend(file_errors)
+    phase_duration = time.monotonic() - phase_start
+    phases["files"] = phase_duration
     if files_downloaded > 0:
-        phase_duration = time.monotonic() - phase_start
         size_mb = files_size / (1024 * 1024)
         logger.info(f"Downloaded {files_downloaded} files ({size_mb:.1f} MB) in {phase_duration:.1f}s")
 
@@ -285,6 +295,7 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
             write_page_recursive(page_id)
 
         phase_duration = time.monotonic() - phase_start
+        phases["markdown"] = phase_duration
         logger.info(f"Wrote {len(written_pages)} markdown files in {phase_duration:.1f}s")
 
     # Create and save manifest
@@ -309,21 +320,29 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
         "pages": manifest.pages_backed_up,
         "databases": manifest.databases_backed_up,
         "files": manifest.files_downloaded,
+        "file_bytes": files_size,
         "errors": len(errors),
         "status": manifest.status,
         "backup_path": str(storage.backup_path),
         "duration_seconds": manifest.duration_seconds,
         "error_list": errors,
+        "phases": phases,
     }
 
 
-def run_backup(config: Config, workspace_name: str | None = None, backup_path: Path | None = None) -> None:
+def run_backup(
+    config: Config,
+    workspace_name: str | None = None,
+    backup_path: Path | None = None,
+    metrics: "BackupMetrics | None" = None,
+) -> None:
     """Execute backup for configured workspaces.
 
     Args:
         config: Application configuration.
         workspace_name: If provided, only backup this workspace.
         backup_path: Override default backup path.
+        metrics: Optional metrics recorder; if provided, records each run result.
     """
     logger = logging.getLogger(__name__)
 
@@ -361,22 +380,8 @@ def run_backup(config: Config, workspace_name: str | None = None, backup_path: P
                 "error_list": [{"type": "backup", "error": str(e)}],
             }
 
-        # Send notification if configured
-        webhook_url = config.notifications.discord_webhook_url
-        if webhook_url and stats:
-            notify_on = config.notifications.notify_on
-            if should_notify(notify_on, stats["status"]):
-                send_discord_notification(
-                    webhook_url=webhook_url,
-                    workspace_name=ws.name,
-                    status=stats["status"],
-                    pages=stats["pages"],
-                    databases=stats["databases"],
-                    files=stats["files"],
-                    duration_seconds=stats.get("duration_seconds", 0),
-                    errors=stats.get("error_list", []),
-                    backup_path=stats["backup_path"],
-                )
+        if metrics:
+            metrics.record(ws.name, stats)
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
@@ -394,8 +399,12 @@ def cmd_serve(args: argparse.Namespace) -> None:
     # Derive backup path from config location
     backup_path = args.config.parent / "backups"
 
+    metrics = BackupMetrics()
+    start_http_server(METRICS_PORT, registry=metrics.registry)
+    logger.info(f"Metrics server listening on :{METRICS_PORT}")
+
     def scheduled_backup(cfg):
-        run_backup(cfg, backup_path=backup_path)
+        run_backup(cfg, backup_path=backup_path, metrics=metrics)
 
     run_scheduler(config, scheduled_backup)
 

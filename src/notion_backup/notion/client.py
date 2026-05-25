@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from notion_client import Client
-from notion_client.errors import APIResponseError
+from notion_client.errors import APIResponseError, HTTPResponseError, RequestTimeoutError
 from notion_client.helpers import collect_paginated_api
 
 from ..concurrency import RateLimiter
@@ -15,11 +15,18 @@ from ..concurrency import RateLimiter
 logger = logging.getLogger(__name__)
 
 
-def retry_on_rate_limit(max_retries: int = 3):
-    """Decorator to retry on 429 responses using Retry-After header.
+def retry_on_transient_error(max_retries: int = 3, backoff_base: float = 1.0):
+    """Decorator to retry transient Notion API failures.
+
+    Retries on request timeouts, 5xx server errors, and 429 rate limits.
+    429 waits for the Retry-After header; other transient errors use
+    exponential backoff. Permanent errors (e.g. object_not_found,
+    unauthorized, validation) are raised immediately. After exhausting
+    retries the last exception is re-raised so the caller can record it.
 
     Args:
-        max_retries: Maximum number of retry attempts.
+        max_retries: Maximum number of attempts.
+        backoff_base: Base seconds for exponential backoff (base * 2**attempt).
     """
     def decorator(func):
         @functools.wraps(func)
@@ -27,18 +34,32 @@ def retry_on_rate_limit(max_retries: int = 3):
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except APIResponseError as e:
-                    if e.status == 429 and attempt < max_retries - 1:
-                        retry_after = 1
-                        if hasattr(e, "headers") and e.headers:
-                            retry_after = int(e.headers.get("Retry-After", 1))
+                except (HTTPResponseError, RequestTimeoutError) as e:
+                    status = getattr(e, "status", None)
+                    is_timeout = isinstance(e, RequestTimeoutError)
+                    is_rate_limited = status == 429
+                    is_server_error = status is not None and status >= 500
+                    transient = is_timeout or is_rate_limited or is_server_error
+
+                    if not transient or attempt == max_retries - 1:
+                        raise
+
+                    if is_rate_limited:
+                        delay = 1
+                        if getattr(e, "headers", None):
+                            delay = int(e.headers.get("Retry-After", 1))
                         logger.warning(
-                            f"Rate limited, retrying in {retry_after}s "
+                            f"Rate limited, retrying in {delay}s "
                             f"(attempt {attempt + 1}/{max_retries})"
                         )
-                        time.sleep(retry_after)
-                        continue
-                    raise
+                    else:
+                        delay = backoff_base * (2 ** attempt)
+                        reason = "timeout" if is_timeout else f"server error {status}"
+                        logger.warning(
+                            f"Transient {reason}, retrying in {delay}s "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                    time.sleep(delay)
             return None  # Unreachable but satisfies type checker
         return wrapper
     return decorator
@@ -141,10 +162,11 @@ class NotionClient:
 
 
 class RateLimitedNotionClient(NotionClient):
-    """NotionClient with rate limiting and automatic retry on 429.
+    """NotionClient with rate limiting and automatic retry on transient errors.
 
     Wraps all API methods with rate limiting to stay within Notion's
-    3 requests/second limit, and retries automatically if rate limited.
+    3 requests/second limit, and retries automatically on timeouts,
+    5xx server errors, and 429 rate limits.
     """
 
     def __init__(self, token: str, rate_limiter: RateLimiter):
@@ -157,7 +179,7 @@ class RateLimitedNotionClient(NotionClient):
         super().__init__(token)
         self._rate_limiter = rate_limiter
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def discover_content(self) -> WorkspaceContent:
         """Discover all pages and databases with rate limiting.
 
@@ -205,13 +227,13 @@ class RateLimitedNotionClient(NotionClient):
             data_source_ids=data_source_ids,
         )
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def get_page(self, page_id: str) -> dict:
         """Retrieve a page by ID with rate limiting."""
         self._rate_limiter.acquire()
         return self._client.pages.retrieve(page_id=page_id)
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def get_blocks(self, block_id: str) -> list[dict]:
         """Retrieve all child blocks with rate limiting."""
         self._rate_limiter.acquire()
@@ -220,13 +242,13 @@ class RateLimitedNotionClient(NotionClient):
             block_id=block_id,
         )
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def get_database(self, database_id: str) -> dict:
         """Retrieve database schema by ID with rate limiting."""
         self._rate_limiter.acquire()
         return self._client.databases.retrieve(database_id=database_id)
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def query_database(self, database_id: str) -> list[dict]:
         """Query all rows from a database with rate limiting."""
         self._rate_limiter.acquire()
@@ -235,13 +257,13 @@ class RateLimitedNotionClient(NotionClient):
             database_id=database_id,
         )
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def get_data_source(self, data_source_id: str) -> dict:
         """Retrieve data source schema by ID with rate limiting."""
         self._rate_limiter.acquire()
         return self._client.data_sources.retrieve(data_source_id=data_source_id)
 
-    @retry_on_rate_limit()
+    @retry_on_transient_error()
     def query_data_source(self, data_source_id: str) -> list[dict]:
         """Query all rows from a data source with rate limiting."""
         self._rate_limiter.acquire()

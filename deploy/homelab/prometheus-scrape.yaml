@@ -1,0 +1,6 @@
+# Append this job under `scrape_configs:` in stacks/monitor/config/prometheus.yaml.
+
+- job_name: "notion-backup"
+  scrape_interval: 60s
+  static_configs:
+    - targets: ["notion-backup:9101"]

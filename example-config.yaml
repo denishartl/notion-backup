@@ -9,11 +9,6 @@ schedule: "0 3 * * *"
 # Older backups are automatically deleted
 retention_count: 7
 
-# Discord notifications (optional)
-# notifications:
-#   discord_webhook_url: "https://discord.com/api/webhooks/..."
-#   notify_on: "always"  # "always" = every backup, "error" = only on failure
-
 # Workspaces to back up
 # Each workspace needs a Notion Internal Integration token
 # Create integrations at: https://www.notion.so/my-integrations

@@ -1,0 +1,32 @@
+# Merge additions for stacks/backup/docker-compose.yaml in denishartl/homelab.
+# Add the service block under `services:`, the volume under `volumes:`,
+# and the network under `networks:` (monitor is already declared there).
+
+services:
+  notion-backup:
+    image: ghcr.io/denishartl/notion-backup:latest
+    hostname: notion-backup
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - monitor
+    environment:
+      - NOTION_TOKEN_PERSONAL=${NOTION_TOKEN_PERSONAL:?Set NOTION_TOKEN_PERSONAL in Portainer env vars}
+      - TZ=Europe/Berlin
+    volumes:
+      - ./config/notion-backup.yaml:/data/config.yaml:ro
+      - notion-backup-data:/data/backups
+    mem_limit: 256m
+    memswap_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Add to the existing `volumes:` block:
+volumes:
+  notion-backup-data:
+
+# `networks.monitor` is already declared in the backup stack — no change needed.

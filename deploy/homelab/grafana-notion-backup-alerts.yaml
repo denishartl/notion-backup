@@ -1,0 +1,179 @@
+# Grafana provisioned alert rules for notion-backup.
+# Place at stacks/monitor/grafana/alerting/grafana-notion-backup-alerts.yaml.
+# Routing is handled by the existing notification policy — all alerts go to the Discord contact point.
+#
+# Datasource UIDs:
+#   prometheus  — set explicitly via `uid: prometheus` in grafana-datasources.yaml; works as-is.
+#   loki        — REQUIRES ACTION. The Loki datasource in stacks/monitor/config/grafana-datasources.yaml
+#                 has no explicit uid, so Grafana assigns a random one. The notion-backup-log-errors
+#                 rule uses datasourceUid: loki, which only matches if Loki's UID is actually "loki".
+#
+#                 Recommended fix (deterministic): add `uid: loki` to the Loki datasource entry in
+#                 stacks/monitor/config/grafana-datasources.yaml. Then datasourceUid: loki matches.
+#
+#                 Alternative: find the auto-assigned UID via Grafana → Connections → Data sources →
+#                 Loki (it's in the page URL) and replace "loki" below with that value.
+#
+#                 Without one of the above, the notion-backup-log-errors rule will fail to load.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: notion-backup
+    folder: Notion Backup
+    interval: 1m
+    rules:
+      - uid: notion-backup-stale
+        title: Notion backup stale
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 133200
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: time() - notion_backup_last_success_timestamp_seconds
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 133200
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [129600]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful Notion backup for workspace '{{ $labels.workspace }}' in the last 36h."
+        isPaused: false
+
+      - uid: notion-backup-failed
+        title: Notion backup failed
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              editorMode: code
+              expr: notion_backup_last_run_status
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [1.5]  # gt 1.5 captures status >= 2 (failed) without firing on 1 (warning)
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Notion backup run failed for workspace '{{ $labels.workspace }}' (status={{ $value }})."
+        isPaused: false
+
+      - uid: notion-backup-log-errors
+        title: Notion backup log errors
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: loki
+            model:
+              datasource:
+                type: loki
+                uid: loki
+              editorMode: code
+              expr: sum(count_over_time({stack_name="backup", container="notion-backup"} | json | level=~"error|critical" [15m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [A]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              refId: B
+              type: threshold
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Error-level log lines detected from notion-backup in the last 15m."
+        isPaused: false

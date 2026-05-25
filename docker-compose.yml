@@ -1,5 +1,5 @@
-# ABOUTME: Docker Compose configuration for notion-backup.
-# ABOUTME: Defines service with volume mount and environment variables.
+# ABOUTME: Docker Compose configuration for notion-backup local development.
+# ABOUTME: Production deployment lives in the homelab repo with proxy/monitor networks.
 
 services:
   notion-backup:
@@ -10,5 +10,20 @@ services:
     environment:
       - NOTION_TOKEN_PERSONAL=${NOTION_TOKEN_PERSONAL}
       - TZ=${TZ:-UTC}
+    ports:
+      - "9101:9101"
     volumes:
-      - ./data:/data
+      - ./data/config.yaml:/data/config.yaml
+      - notion-backup-data:/data/backups
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    mem_limit: 256m
+    memswap_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  notion-backup-data:

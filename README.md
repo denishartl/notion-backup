@@ -10,7 +10,8 @@ Automated backups for Notion workspaces. Creates scheduled backups of all your N
 - **Markdown export** with human-readable content
 - **File downloads** for images and attachments
 - **Automatic retention** deletes old backups
-- **Discord notifications** on success or failure
+- **Prometheus metrics** on port 9101 for Grafana dashboards
+- **Structured JSON logging** to stdout for Loki/log aggregation
 - **Docker-ready** for Raspberry Pi and other ARM devices
 
 ## Installation
@@ -57,16 +58,18 @@ schedule: "0 3 * * *"  # Daily at 3 AM
 # Number of backups to keep per workspace
 retention_count: 7
 
-# Discord notifications (optional)
-notifications:
-  discord_webhook_url: "https://discord.com/api/webhooks/..."
-  notify_on: "always"  # "always" or "error"
-
 # Workspaces to back up
 workspaces:
   - name: personal
     token_env: NOTION_TOKEN_PERSONAL
 ```
+
+Required environment variables (set via Portainer or `.env` file — see `.env.example`):
+
+| Variable | Description |
+|----------|-------------|
+| `NOTION_TOKEN_<NAME>` | Notion internal integration token for the workspace named `<NAME>` |
+| `TZ` | Container timezone (e.g. `Europe/Berlin`) |
 
 ### 4. Run with Docker
 
@@ -95,8 +98,6 @@ docker exec notion-backup python -m notion_backup run
 |--------|----------|-------------|
 | `schedule` | Yes | Cron expression (5-field) for backup timing |
 | `retention_count` | Yes | Number of backups to keep per workspace |
-| `notifications.discord_webhook_url` | No | Discord webhook for notifications |
-| `notifications.notify_on` | No | `"always"` or `"error"` (default: `"error"`) |
 | `workspaces` | Yes | List of workspaces to back up |
 | `workspaces[].name` | Yes | Identifier for the workspace |
 | `workspaces[].token_env` | Yes | Environment variable containing the Notion token |
@@ -160,9 +161,21 @@ services:
 
 ## Logs
 
-Logs are written to:
-- **stdout** for `docker logs`
+Logs are written as structured JSON to:
+- **stdout** for `docker logs` and log aggregation (Loki)
 - **`/data/logs/backup.log`** with rotation (10MB, 5 files)
+
+Each line is a JSON object with fields: `timestamp`, `level`, `msg`, `logger`.
+
+## Monitoring
+
+The app exposes Prometheus metrics on port **9101** at `/metrics`. Grafana dashboards and alerts are built from these metrics — see [`MONITORING.md`](MONITORING.md) for the full metric reference, PromQL examples, LogQL queries, and alert rule descriptions.
+
+Alerting is handled by Grafana. Alert rules are provisioned from [`deploy/homelab/grafana-notion-backup-alerts.yaml`](deploy/homelab/grafana-notion-backup-alerts.yaml).
+
+## Deployment
+
+For homelab deployment (Docker stack with Prometheus scraping and Grafana alerting), see [`deploy/homelab/README.md`](deploy/homelab/README.md).
 
 ## Development
 
