@@ -15,8 +15,10 @@ class BackupManifest:
     pages_backed_up: int = 0
     databases_backed_up: int = 0
     files_downloaded: int = 0
+    file_bytes: int = 0
     errors: list[dict] = field(default_factory=list)
     status: Literal["completed", "completed_with_warnings", "failed"] = "completed"
+    phase_durations: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.timestamp:
@@ -33,6 +35,8 @@ def create_manifest(
     databases_count: int,
     files_count: int,
     errors: list[dict],
+    file_bytes: int = 0,
+    phase_durations: dict[str, float] | None = None,
 ) -> BackupManifest:
     """Create a backup manifest.
 
@@ -42,6 +46,8 @@ def create_manifest(
         databases_count: Number of databases backed up.
         files_count: Number of files downloaded.
         errors: List of error dicts from the backup.
+        file_bytes: Total bytes of files downloaded.
+        phase_durations: Per-phase durations in seconds.
 
     Returns:
         BackupManifest with computed fields.
@@ -66,6 +72,8 @@ def create_manifest(
         pages_backed_up=pages_count,
         databases_backed_up=databases_count,
         files_downloaded=files_count,
+        file_bytes=file_bytes,
         errors=errors,
         status=status,
+        phase_durations=phase_durations or {},
     )
