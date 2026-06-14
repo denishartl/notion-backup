@@ -2,6 +2,7 @@
 # ABOUTME: Provides 'serve' and 'run' commands.
 
 import argparse
+import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,7 +22,7 @@ from .scheduler import run_scheduler
 from .notion import RateLimitedNotionClient, fetch_page_with_blocks, fetch_database_with_rows, fetch_data_source_with_rows
 from .backup import BackupStorage, download_files_from_blocks, create_manifest
 from .markdown import MarkdownWriter, get_page_title
-from .retention import prune_old_backups
+from .retention import prune_old_backups, get_backup_dirs
 
 # Number of concurrent API workers (limited by Notion rate limit)
 MAX_API_WORKERS = 3
@@ -305,6 +306,8 @@ def backup_workspace(ws: WorkspaceConfig, backup_path: Path) -> dict:
         databases_count=len(databases_data),
         files_count=files_downloaded,
         errors=errors,
+        file_bytes=files_size,
+        phase_durations=phases,
     )
     storage.save_manifest(manifest.to_dict())
 
@@ -384,6 +387,30 @@ def run_backup(
             metrics.record(ws.name, stats)
 
 
+def seed_metrics_from_disk(metrics: BackupMetrics, config: Config, backup_path: Path) -> None:
+    """Seed gauges from each workspace's latest manifest on startup.
+
+    Restarting wipes the in-memory registry, so without this the metrics endpoint
+    would expose nothing until the next scheduled run completes. A missing or unreadable
+    manifest is skipped — seeding must never prevent the service from starting.
+    """
+    logger = logging.getLogger(__name__)
+
+    for ws in config.workspaces:
+        backup_dirs = get_backup_dirs(backup_path / ws.name)
+        if not backup_dirs:
+            continue
+
+        manifest_path = backup_dirs[-1] / "manifest.json"
+        try:
+            with open(manifest_path, encoding="utf-8") as f:
+                manifest = json.load(f)
+            metrics.seed(ws.name, manifest)
+            logger.info(f"Seeded metrics for '{ws.name}' from {manifest_path}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not seed metrics for '{ws.name}' from {manifest_path}: {e}")
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     """Run the scheduler and wait for cron triggers."""
     logger = logging.getLogger(__name__)
@@ -400,6 +427,7 @@ def cmd_serve(args: argparse.Namespace) -> None:
     backup_path = args.config.parent / "backups"
 
     metrics = BackupMetrics()
+    seed_metrics_from_disk(metrics, config, backup_path)
     start_http_server(METRICS_PORT, registry=metrics.registry)
     logger.info(f"Metrics server listening on :{METRICS_PORT}")
 

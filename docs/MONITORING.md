@@ -13,7 +13,7 @@ Source of truth for building Grafana dashboards, Prometheus alerts, and Loki log
 
 The endpoint is on the homelab `monitor` network. Prometheus job name: `notion-backup`. See `deploy/homelab/prometheus-scrape.yaml` for the scrape config.
 
-All `notion_backup_*` series appear **only after the first backup run completes** for a given workspace. Freshness and status queries return no data until then — this is intentional.
+On startup the service **seeds the gauges from each workspace's latest backup manifest**, so `notion_backup_*` gauge series are present immediately after a (re)start rather than only after the next scheduled run. A workspace that has never produced a backup yet exposes no series until its first run. Counters (`notion_backup_runs_total`, `notion_backup_errors_total`) are **not** seeded — they legitimately reset on restart and are read with `increase(...)` in dashboards.
 
 ---
 
@@ -128,7 +128,7 @@ The app writes structured JSON to stdout. Docker/Alloy collects container stdout
 
 | Label | Value |
 |-------|-------|
-| `container` | `notion-backup` |
+| `container` | `backup-notion-backup-1` (Compose `<project>-<service>-<index>`; the deployed stack does not set `container_name`) |
 | `stack_name` | `backup` |
 | `job` | `docker_logs` |
 
@@ -145,28 +145,33 @@ The app writes structured JSON to stdout. Docker/Alloy collects container stdout
 
 ```logql
 # All logs from notion-backup
-{stack_name="backup", container="notion-backup"} | json
+{stack_name="backup", container="backup-notion-backup-1"} | json
 
 # Error and critical lines only
-{stack_name="backup", container="notion-backup"} | json | level=~"error|critical"
+{stack_name="backup", container="backup-notion-backup-1"} | json | level=~"error|critical"
 
 # Count error lines in last 15 minutes (used by the log-errors alert)
-sum(count_over_time({stack_name="backup", container="notion-backup"} | json | level=~"error|critical" [15m]))
+sum(count_over_time({stack_name="backup", container="backup-notion-backup-1"} | json | level=~"error|critical" [15m]))
 ```
+
+Note: per-item failures (a page/database/file that could not be fetched) are logged at
+`warning` level and end the run as `completed_with_warnings`. They are **not** matched by
+the `error|critical` selector — the `notion-backup-warnings` metric alert covers those.
 
 ---
 
 ## Alerts
 
-Alert rules are provisioned from [`deploy/homelab/grafana-notion-backup-alerts.yaml`](deploy/homelab/grafana-notion-backup-alerts.yaml). Three rules are defined:
+Alert rules are provisioned from [`deploy/homelab/grafana-notion-backup-alerts.yaml`](deploy/homelab/grafana-notion-backup-alerts.yaml). Four rules are defined:
 
 | Rule UID | Title | Signal | Threshold |
 |----------|-------|--------|-----------|
 | `notion-backup-stale` | Notion backup stale | `notion_backup_last_success_timestamp_seconds` — fires when `time() - last_success > 129600s` (36 h) | severity: critical |
 | `notion-backup-failed` | Notion backup failed | `notion_backup_last_run_status` — fires when status `> 1.5` (i.e. value `2` = failed) | severity: critical |
-| `notion-backup-log-errors` | Notion backup log errors | Loki `count_over_time` of `level=~"error\|critical"` over 15 m — fires when count `> 0` | severity: warning |
+| `notion-backup-warnings` | Notion backup completed with warnings | `notion_backup_last_run_status` — fires when status is within `[0.5, 1.5]` (i.e. value `1` = completed_with_warnings) | severity: warning |
+| `notion-backup-log-errors` | Notion backup log errors | Loki `count_over_time` of `level=~"error\|critical"` over 15 m for `container="backup-notion-backup-1"` — fires when count `> 0` | severity: warning |
 
-All three use `noDataState: OK`, so they are silent before the first run.
+All use `noDataState: OK`. The metric-based rules stay reliable across restarts because the gauges are seeded from disk at startup (see § Metrics endpoint).
 
 Routing is handled by the existing Grafana notification policy (alerts go to the configured contact point — no per-rule routing needed).
 

@@ -1,6 +1,8 @@
 # ABOUTME: Tests for the BackupMetrics Prometheus metrics recorder.
 # ABOUTME: Uses isolated CollectorRegistry instances to avoid cross-test pollution.
 
+from datetime import datetime
+
 import prometheus_client
 
 from notion_backup.metrics import BackupMetrics
@@ -166,6 +168,94 @@ class TestErrorListCounting:
 
     def test_errors_total_file_type_is_one(self):
         assert val(self.registry, "notion_backup_errors_total", {"workspace": "personal", "type": "file"}) == 1
+
+
+class TestSeedFromManifest:
+    def setup_method(self):
+        self.registry = make_registry()
+        self.m = BackupMetrics(registry=self.registry)
+        self.manifest = {
+            "timestamp": "2026-06-14T01:00:00Z",
+            "duration_seconds": 95.5,
+            "pages_backed_up": 42,
+            "databases_backed_up": 3,
+            "files_downloaded": 10,
+            "file_bytes": 1048576,
+            "errors": [
+                {"type": "file", "error": "download failed"},
+                {"type": "file", "error": "timeout"},
+            ],
+            "status": "completed_with_warnings",
+            "phase_durations": {"pages": 12.5, "files": 3.0},
+        }
+        self.m.seed("personal", self.manifest)
+
+    def test_seeds_status(self):
+        assert val(self.registry, "notion_backup_last_run_status", {"workspace": "personal"}) == 1
+
+    def test_seeds_counts(self):
+        assert val(self.registry, "notion_backup_last_run_pages", {"workspace": "personal"}) == 42
+        assert val(self.registry, "notion_backup_last_run_databases", {"workspace": "personal"}) == 3
+        assert val(self.registry, "notion_backup_last_run_files", {"workspace": "personal"}) == 10
+
+    def test_seeds_file_bytes(self):
+        assert val(self.registry, "notion_backup_last_run_file_bytes", {"workspace": "personal"}) == 1048576
+
+    def test_seeds_duration(self):
+        assert val(self.registry, "notion_backup_last_run_duration_seconds", {"workspace": "personal"}) == 95.5
+
+    def test_seeds_error_count_from_list_length(self):
+        assert val(self.registry, "notion_backup_last_run_errors", {"workspace": "personal"}) == 2
+
+    def test_seeds_phase_durations(self):
+        assert val(
+            self.registry,
+            "notion_backup_last_run_phase_duration_seconds",
+            {"workspace": "personal", "phase": "pages"},
+        ) == 12.5
+
+    def test_seeds_success_timestamp_to_manifest_time_not_now(self):
+        # Must reflect the manifest's own timestamp, never the current time, so the
+        # staleness alert stays accurate across restarts.
+        expected = datetime.fromisoformat("2026-06-14T01:00:00+00:00").timestamp()
+        assert val(
+            self.registry, "notion_backup_last_success_timestamp_seconds", {"workspace": "personal"}
+        ) == expected
+
+    def test_seeds_run_timestamp_to_manifest_time(self):
+        expected = datetime.fromisoformat("2026-06-14T01:00:00+00:00").timestamp()
+        assert val(
+            self.registry, "notion_backup_last_run_timestamp_seconds", {"workspace": "personal"}
+        ) == expected
+
+    def test_seed_does_not_touch_counters(self):
+        # Counters legitimately reset on restart; seeding must not fabricate run/error totals.
+        assert val(self.registry, "notion_backup_runs_total", {"workspace": "personal", "status": "completed_with_warnings"}) is None
+        assert val(self.registry, "notion_backup_errors_total", {"workspace": "personal", "type": "file"}) is None
+
+
+class TestSeedFailedRun:
+    def setup_method(self):
+        self.registry = make_registry()
+        self.m = BackupMetrics(registry=self.registry)
+        self.m.seed("personal", {
+            "timestamp": "2026-06-14T01:00:00Z",
+            "duration_seconds": 1.0,
+            "pages_backed_up": 0,
+            "databases_backed_up": 0,
+            "files_downloaded": 0,
+            "file_bytes": 0,
+            "errors": [{"type": "backup", "error": "boom"}],
+            "status": "failed",
+            "phase_durations": {},
+        })
+
+    def test_status_is_two(self):
+        assert val(self.registry, "notion_backup_last_run_status", {"workspace": "personal"}) == 2
+
+    def test_success_timestamp_not_seeded_for_failed(self):
+        # A failed last run must not produce a success timestamp (would mask staleness).
+        assert val(self.registry, "notion_backup_last_success_timestamp_seconds", {"workspace": "personal"}) is None
 
 
 class TestCounterAccumulation:

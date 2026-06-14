@@ -2,6 +2,7 @@
 # ABOUTME: Tracks backup health, durations, counts, and errors per workspace.
 
 import time
+from datetime import datetime
 
 import prometheus_client
 
@@ -101,23 +102,92 @@ class BackupMetrics:
         now = time.time()
         status = stats["status"]
 
-        self._last_run_timestamp.labels(workspace).set(now)
-        self._last_run_status.labels(workspace).set(self._STATUS_MAP.get(status, 2))
-
-        if status != "failed":
-            self._last_success_timestamp.labels(workspace).set(now)
+        self._set_run_gauges(
+            workspace,
+            status=status,
+            run_timestamp=now,
+            success_timestamp=None if status == "failed" else now,
+            duration=stats.get("duration_seconds", 0),
+            pages=stats.get("pages", 0),
+            databases=stats.get("databases", 0),
+            files=stats.get("files", 0),
+            file_bytes=stats.get("file_bytes", 0),
+            errors_count=stats.get("errors", 0),
+            phases=stats.get("phases", {}),
+        )
 
         self._runs.labels(workspace, status).inc()
-
-        self._last_run_duration.labels(workspace).set(stats.get("duration_seconds", 0))
-        self._last_run_pages.labels(workspace).set(stats.get("pages", 0))
-        self._last_run_databases.labels(workspace).set(stats.get("databases", 0))
-        self._last_run_files.labels(workspace).set(stats.get("files", 0))
-        self._last_run_file_bytes.labels(workspace).set(stats.get("file_bytes", 0))
-        self._last_run_errors.labels(workspace).set(stats.get("errors", 0))
-
-        for phase, dur in stats.get("phases", {}).items():
-            self._phase_duration.labels(workspace, phase).set(dur)
-
         for err in stats.get("error_list", []):
             self._errors.labels(workspace, err.get("type", "unknown")).inc()
+
+    def seed(self, workspace: str, manifest: dict) -> None:
+        """Populate gauges from a persisted backup manifest.
+
+        Called at startup so the metrics endpoint reflects the last run immediately,
+        instead of staying empty until the next scheduled backup. Counters are left
+        untouched — they legitimately reset when the process restarts.
+
+        Args:
+            workspace: Workspace name used as the label value.
+            manifest: Manifest dict as written by BackupManifest.to_dict().
+        """
+        run_timestamp = self._parse_iso_to_epoch(manifest.get("timestamp"))
+        if run_timestamp is None:
+            return
+
+        status = manifest.get("status", "completed")
+        self._set_run_gauges(
+            workspace,
+            status=status,
+            run_timestamp=run_timestamp,
+            success_timestamp=None if status == "failed" else run_timestamp,
+            duration=manifest.get("duration_seconds", 0),
+            pages=manifest.get("pages_backed_up", 0),
+            databases=manifest.get("databases_backed_up", 0),
+            files=manifest.get("files_downloaded", 0),
+            file_bytes=manifest.get("file_bytes", 0),
+            errors_count=len(manifest.get("errors", [])),
+            phases=manifest.get("phase_durations", {}),
+        )
+
+    def _set_run_gauges(
+        self,
+        workspace: str,
+        *,
+        status: str,
+        run_timestamp: float,
+        success_timestamp: float | None,
+        duration: float,
+        pages: int,
+        databases: int,
+        files: int,
+        file_bytes: int,
+        errors_count: int,
+        phases: dict,
+    ) -> None:
+        """Set every per-run gauge for a workspace. Shared by record() and seed()."""
+        self._last_run_timestamp.labels(workspace).set(run_timestamp)
+        self._last_run_status.labels(workspace).set(self._STATUS_MAP.get(status, 2))
+
+        if success_timestamp is not None:
+            self._last_success_timestamp.labels(workspace).set(success_timestamp)
+
+        self._last_run_duration.labels(workspace).set(duration)
+        self._last_run_pages.labels(workspace).set(pages)
+        self._last_run_databases.labels(workspace).set(databases)
+        self._last_run_files.labels(workspace).set(files)
+        self._last_run_file_bytes.labels(workspace).set(file_bytes)
+        self._last_run_errors.labels(workspace).set(errors_count)
+
+        for phase, dur in phases.items():
+            self._phase_duration.labels(workspace, phase).set(dur)
+
+    @staticmethod
+    def _parse_iso_to_epoch(timestamp: str | None) -> float | None:
+        """Parse an ISO-8601 timestamp (with trailing 'Z') to a Unix epoch, or None."""
+        if not timestamp:
+            return None
+        try:
+            return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            return None
