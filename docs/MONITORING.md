@@ -141,6 +141,8 @@ The app writes structured JSON to stdout. Docker/Alloy collects container stdout
 | `msg` | Log message |
 | `logger` | Logger name (Python module path) |
 
+The Notion SDK's own `notion_client` logger is set to `error`, a level the SDK never logs at. Each request failure is logged once, by the app, together with the page or data source it belongs to. Retries the SDK performs internally on rate limits and server errors are not logged. Retries by the app, and every request that still fails after them, are.
+
 ### Example LogQL
 
 ```logql
