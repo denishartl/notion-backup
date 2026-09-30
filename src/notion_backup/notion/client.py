@@ -78,7 +78,14 @@ class NotionClient:
     """Wrapper around the Notion SDK client."""
 
     def __init__(self, token: str):
-        self._client = Client(auth=token)
+        # The app logs every request failure itself, as JSON with its page or
+        # data source. Given no logger, the SDK attaches a new plain-text handler
+        # per client, and at its default level it repeats each failure.
+        self._client = Client(
+            auth=token,
+            logger=logging.getLogger("notion_client"),
+            log_level=logging.ERROR,
+        )
 
     def discover_content(self) -> WorkspaceContent:
         """Discover all pages and databases shared with this integration.

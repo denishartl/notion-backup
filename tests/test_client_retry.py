@@ -23,8 +23,13 @@ def no_sleep(monkeypatch):
 
 
 def _api_error(status: int, code: APIErrorCode, headers: dict | None = None) -> APIResponseError:
-    response = httpx.Response(status_code=status, headers=headers or {})
-    return APIResponseError(response=response, message="boom", code=code)
+    return APIResponseError(
+        code=code,
+        status=status,
+        message="boom",
+        headers=httpx.Headers(headers or {}),
+        raw_body_text="",
+    )
 
 
 def _flaky(sequence):

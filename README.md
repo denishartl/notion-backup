@@ -120,6 +120,8 @@ data/backups/{workspace}/{timestamp}/
 └── manifest.json                  # Backup summary
 ```
 
+Rows of synced databases, such as GitHub pull requests mirrored into Notion, have no page body. They are saved with their properties and an empty `blocks` list. See [`docs/synced-database-rows.md`](docs/synced-database-rows.md).
+
 ### Manifest Format
 
 ```json
