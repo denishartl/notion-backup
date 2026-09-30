@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 # the integration). These are skipped so the rest of the page is still backed up.
 PERMANENT_BLOCK_ERRORS = {APIErrorCode.ObjectNotFound, APIErrorCode.RestrictedResource}
 
+# Rows of synced databases, such as GitHub pull requests mirrored by Notion's
+# GitHub integration, mirror objects owned by another tool. The API returns their
+# properties but rejects any request for their child blocks with a validation
+# error naming this type.
+SYNCED_ROW_BLOCK_TYPE = "external_object_instance_page"
+
 # Block types that can have children
 BLOCKS_WITH_CHILDREN = {
     "paragraph",
@@ -47,9 +53,16 @@ def fetch_blocks_recursive(client: NotionClient, block_id: str) -> list[dict]:
         block_id: The ID of the parent block or page.
 
     Returns:
-        List of blocks with their children populated in-place.
+        List of blocks with their children populated in-place. A synced
+        database row has no API-readable content and yields an empty list.
     """
-    blocks = client.get_blocks(block_id)
+    try:
+        blocks = client.get_blocks(block_id)
+    except APIResponseError as e:
+        if e.code != APIErrorCode.ValidationError or SYNCED_ROW_BLOCK_TYPE not in str(e):
+            raise
+        logger.debug(f"Block {block_id} is a synced database row with no API-readable content")
+        return []
 
     for block in blocks:
         block_type = block.get("type")

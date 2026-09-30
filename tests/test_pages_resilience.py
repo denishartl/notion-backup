@@ -1,12 +1,12 @@
-# ABOUTME: Tests that page block fetching survives permanently-inaccessible child blocks.
-# ABOUTME: Inaccessible children are skipped; transient failures still propagate.
+# ABOUTME: Tests that page fetching survives inaccessible child blocks and synced database rows.
+# ABOUTME: Unreadable content is skipped. Transient and unrecognised failures still propagate.
 
 import httpx
 import pytest
 
 from notion_client.errors import APIErrorCode, APIResponseError, RequestTimeoutError
 
-from notion_backup.notion.pages import fetch_blocks_recursive
+from notion_backup.notion.pages import fetch_blocks_recursive, fetch_page_with_blocks
 
 
 def _api_error(status: int, code: APIErrorCode, message: str = "boom") -> APIResponseError:
@@ -30,6 +30,9 @@ class FakeClient:
         if block_id in self._errors_by_id:
             raise self._errors_by_id[block_id]
         return self._blocks_by_id.get(block_id, [])
+
+    def get_page(self, page_id: str) -> dict:
+        return {"id": page_id, "properties": {"Title": {"type": "title"}}}
 
 
 def test_skips_inaccessible_child_block_keeps_rest():
@@ -74,3 +77,59 @@ def test_fetches_accessible_children():
     result = fetch_blocks_recursive(client, parent)
 
     assert result[0]["children"][0]["id"] == "grandchild"
+
+
+SYNCED_ROW_REJECTION = "Block type external_object_instance_page is not supported via the API."
+
+
+def test_synced_row_page_keeps_properties_with_empty_body():
+    errors_by_id = {"row1": _api_error(400, APIErrorCode.ValidationError, SYNCED_ROW_REJECTION)}
+    client = FakeClient({}, errors_by_id)
+
+    result = fetch_page_with_blocks(client, "row1")
+
+    assert result.page["id"] == "row1"
+    assert result.page["properties"]
+    assert result.blocks == []
+
+
+def test_synced_row_child_is_skipped_keeps_rest():
+    blocks_by_id = {
+        "page1": [
+            {"id": "childA", "type": "paragraph", "has_children": True},
+            {"id": "blockB", "type": "paragraph", "has_children": False},
+        ],
+    }
+    errors_by_id = {"childA": _api_error(400, APIErrorCode.ValidationError, SYNCED_ROW_REJECTION)}
+    client = FakeClient(blocks_by_id, errors_by_id)
+
+    result = fetch_blocks_recursive(client, "page1")
+
+    assert [b["id"] for b in result] == ["childA", "blockB"]
+    assert result[0]["children"] == []
+
+
+def test_other_unsupported_type_still_raises():
+    message = "Block type ai_block is not supported via the API."
+    errors_by_id = {"page1": _api_error(400, APIErrorCode.ValidationError, message)}
+    client = FakeClient({}, errors_by_id)
+
+    with pytest.raises(APIResponseError):
+        fetch_page_with_blocks(client, "page1")
+
+
+def test_page_level_not_found_still_raises():
+    errors_by_id = {"page1": _api_error(404, APIErrorCode.ObjectNotFound, SYNCED_ROW_REJECTION)}
+    client = FakeClient({}, errors_by_id)
+
+    with pytest.raises(APIResponseError):
+        fetch_page_with_blocks(client, "page1")
+
+
+def test_regular_page_keeps_its_blocks():
+    blocks_by_id = {"page1": [{"id": "blockA", "type": "paragraph", "has_children": False}]}
+    client = FakeClient(blocks_by_id)
+
+    result = fetch_page_with_blocks(client, "page1")
+
+    assert [b["id"] for b in result.blocks] == ["blockA"]
