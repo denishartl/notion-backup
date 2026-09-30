@@ -9,9 +9,14 @@ from notion_client.errors import APIErrorCode, APIResponseError, RequestTimeoutE
 from notion_backup.notion.pages import fetch_blocks_recursive
 
 
-def _api_error(status: int, code: APIErrorCode) -> APIResponseError:
-    response = httpx.Response(status_code=status, headers={})
-    return APIResponseError(response=response, message="boom", code=code)
+def _api_error(status: int, code: APIErrorCode, message: str = "boom") -> APIResponseError:
+    return APIResponseError(
+        code=code,
+        status=status,
+        message=message,
+        headers=httpx.Headers(),
+        raw_body_text="",
+    )
 
 
 class FakeClient:
